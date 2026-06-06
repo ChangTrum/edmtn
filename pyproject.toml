@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edmtn"
+version = "0.0.1"
+description = "Extended Density Matrix tensor-network solver for open quantum systems"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "scipy",
+    "quimb",
+    "autoray",
+]
+
+# CuPy is an optional, platform-specific dependency (GPU wheel must match the
+# installed CUDA toolkit), so it is not pinned as a hard requirement.
+[project.optional-dependencies]
+gpu = ["cupy"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Make the src-layout package importable without an editable install.
+pythonpath = ["src"]
+# integration/benchmark tests are opt-in (run with `-m integration` etc.);
+# the default run is the fast unit suite.
+addopts = "-ra -m 'not integration and not benchmark'"
+markers = [
+    "integration: end-to-end physics reproduction (slower than unit tests)",
+    "benchmark: performance/accuracy benchmarks (run explicitly, not in CI)",
+]
