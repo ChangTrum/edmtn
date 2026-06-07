@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from .base import CumulantEngine
 from .gaussian import GaussianCumulantEngine, GaussianCumulants
+from .separable import SeparableBathCorrelation, SeparableCorrelation
 
 __all__ = [
     "CumulantEngine",
     "GaussianCumulantEngine",
     "GaussianCumulants",
+    "SeparableBathCorrelation",
+    "SeparableCorrelation",
 ]

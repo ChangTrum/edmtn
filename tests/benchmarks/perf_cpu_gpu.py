@@ -17,9 +17,9 @@ negligible compute), so we expect the CPU to win for Phase-1 sizes; the GPU only
 pays off once individual matrices get large.  fp32 roughly halves the work and
 memory but caps accuracy near ~1e-6 relative.
 
-Run:
-    python examples/benchmark_cpu_gpu.py
-    python examples/benchmark_cpu_gpu.py --sizes 100,200,300 --order 2
+Not a pytest test -- the ``perf_`` prefix keeps it out of collection; run directly:
+    python tests/benchmarks/perf_cpu_gpu.py
+    python tests/benchmarks/perf_cpu_gpu.py --sizes 100,200,300 --order 2
 """
 
 from __future__ import annotations

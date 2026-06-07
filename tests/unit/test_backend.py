@@ -6,6 +6,7 @@ Covers:
   * CuPySVDBackend SVD / QR / eigh correctness
   * QuimbSVDBackend on both NumPy and CuPy arrays
   * the autoray/CuPy compat shim (quimb split + contraction on the GPU)
+  * backend/precision physics-equivalence end-to-end through the pipeline
 
 GPU tests are skipped automatically if CuPy or a device is unavailable.
 """
@@ -14,6 +15,10 @@ import numpy as np
 import pytest
 
 import edmtn.backend as bk
+from edmtn.cumulants import GaussianCumulantEngine
+from edmtn.evolution import SingleBathEvolution
+from edmtn.kernels import GaussianKernelEngine
+from edmtn.models import SpinBosonModel
 
 
 # --------------------------------------------------------------------------
@@ -221,3 +226,48 @@ def test_compat_shim_quimb_contract_on_cupy():
     out = (t1 & t2).contract()
     assert type(out.data).__module__.startswith("cupy")
     assert set(out.inds) == {"a", "d"}
+
+
+# --------------------------------------------------------------------------
+# backend / precision physics-equivalence (end-to-end through the pipeline)
+# --------------------------------------------------------------------------
+# These confirm the alternate precision (f32) and the GPU backend produce the
+# *same physics* as the CPU/complex128 reference.  Phase 1/2 run on CPU/f64 by
+# default, so both alternate paths are deferred to Phase 3/4 (where randomized /
+# single-pass SVD make the GPU the faster path); they are skipped here but kept
+# for reactivation.  See docs/cpu-vs-gpu-edm.md.
+_PHASE34 = "alternate backend/precision path; Phase 1/2 run CPU/f64 (docs/cpu-vs-gpu-edm.md)"
+
+
+def _sz_history(convert, eps=0.05, N=20, cutoff=1e-6):
+    """<S_z(t)> over a short spin-boson evolution on the given backend cast."""
+    model = SpinBosonModel(J0=0.7, omega_c=5.0, mu=1.0)
+    cum = GaussianCumulantEngine().compute(model, T=N * eps, eps=eps)
+    eng = GaussianKernelEngine(cum)
+    res = SingleBathEvolution().run(
+        model, eng, eps, N, cutoff=cutoff, record_rho=True, convert=convert
+    )
+    out = []
+    for t, rho in zip(res.times, res.density_matrices):
+        r = rho.get() if hasattr(rho, "get") else rho
+        out.append(np.trace(model.coupling_operators_at(t)[0] @ r).real)
+    return np.array(out)
+
+
+@pytest.mark.skip(reason=_PHASE34)
+def test_cpu_fp32_matches_fp64():
+    ref = _sz_history(None)
+    f32 = _sz_history(lambda a: np.asarray(a, np.complex64))
+    np.testing.assert_allclose(f32, ref, atol=1e-4)  # single precision: ~1e-5
+
+
+@pytest.mark.skip(reason=_PHASE34)
+@requires_gpu
+def test_gpu_matches_cpu():
+    import cupy as cp
+
+    ref = _sz_history(None)
+    gpu64 = _sz_history(lambda a: cp.asarray(a, cp.complex128))
+    np.testing.assert_allclose(gpu64, ref, atol=1e-8)
+    gpu32 = _sz_history(lambda a: cp.asarray(a, cp.complex64))
+    np.testing.assert_allclose(gpu32, ref, atol=1e-4)

@@ -16,6 +16,8 @@ from ..decomposition.standard_svd import StandardSVD
 from ..expansion.first_order import FirstOrderExpander
 from ..expansion.second_order import SecondOrderExpander
 from ..kernels.gaussian_mpo import GaussianKernelEngine
+from ..kernels.separable_mpo import SeparableKernelEngine
+from ..evolution.separable_bath import SeparableBathEvolution
 from ..evolution.single_bath import SingleBathEvolution
 
 
@@ -56,6 +58,9 @@ class SolverConfig:
     expansion_order: int = 1
     record_rho: bool = False
     decomposition: object | None = None
+    sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
+    backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
+    precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
 
     @property
     def n_steps(self) -> int:
@@ -107,4 +112,15 @@ def _build_gaussian(model, config: SolverConfig):
     return kernel_engine, evolution
 
 
+def _build_separable(model, config: SolverConfig):
+    kernel_engine = SeparableKernelEngine.from_model(model, T=config.T, eps=config.eps)
+    decomposition = config.decomposition or StandardSVD()
+    evolution = SeparableBathEvolution(
+        expander=_make_expander(config.expansion_order),
+        decomposition=decomposition,
+    )
+    return kernel_engine, evolution
+
+
 register_pipeline("gaussian", _build_gaussian)
+register_pipeline("separable", _build_separable)

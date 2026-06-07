@@ -16,12 +16,15 @@ from .mps_utils import (
     left_canonicalize,
     truncate,
 )
+from .separable_bath import SeparableBathEvolution, SeparableEvolutionResult
 from .single_bath import EvolutionResult, SingleBathEvolution
 
 __all__ = [
     "EDMMPS",
     "SingleBathEvolution",
     "EvolutionResult",
+    "SeparableBathEvolution",
+    "SeparableEvolutionResult",
     "apply_step",
     "compress",
     "left_canonicalize",

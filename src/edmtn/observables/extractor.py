@@ -70,14 +70,22 @@ class ObservableExtractor:
     # -- all-times coupling-channel history (Eq. F2) -----------------------
 
     @staticmethod
-    def coupling_polarization_history(mps, eps, *, channel: int = 1):
+    def coupling_polarization_history(mps, eps, *, channel: int = 1, order: int = 1):
         """``<S_a(t)>`` for the coupling channel ``a = channel`` at every time.
 
         Returns ``(times, values)`` ascending in time, with ``values`` real
         (the imaginary part is asserted negligible for a Hermitian observable).
         Uses a single left/right environment sweep over the final EDM.
+
+        * ``order = 1`` (Eq. F2): select arm ``2a-1`` at every site; the slice
+          already carries ``eps S^+_a`` so a ``1/eps`` factor cancels it.
+        * ``order = 2`` (Eq. F3): on the doubled sub-step grid, select arm
+          ``2a-1`` at each ``S_1`` sub-step (odd sub-step index), with prefactor
+          ``(1+i)/eps``; the ``S_1`` slice carries ``(1-i)/2 eps S^+_a`` and
+          ``(1+i)(1-i)/2 = 1``, so this returns one value per physical step.
         """
-        xp = _xp(mps.tensors[0])
+        if order not in (1, 2):
+            raise ValueError(f"order must be 1 or 2, got {order}")
         n = mps.num_sites
         sel = 2 * channel - 1  # S^+ selector of channel `a`
         if not 0 < sel < mps.d_phys:
@@ -97,12 +105,27 @@ class ObservableExtractor:
         for p in range(n - 2, -1, -1):
             right[p] = zero_mats[p + 1] @ right[p + 1]
 
-        times = np.empty(n, dtype=np.float64)
-        values = np.empty(n, dtype=np.complex128)
-        for p in range(n):
-            val = left[p] @ (sel_mats[p] @ right[p])
-            times[n - 1 - p] = (n - p) * eps
-            values[n - 1 - p] = complex(_scalar(val)) / eps
+        if order == 1:
+            times = np.empty(n, dtype=np.float64)
+            values = np.empty(n, dtype=np.complex128)
+            for p in range(n):
+                val = left[p] @ (sel_mats[p] @ right[p])
+                times[n - 1 - p] = (n - p) * eps
+                values[n - 1 - p] = complex(_scalar(val)) / eps
+        else:
+            # one physical step per pair of sub-steps; sub-step g = n - p, with
+            # odd g the S_1 (psi) channel.  m = (g+1)//2 is the physical step.
+            n_phys = n // 2
+            coeff = (1.0 + 1.0j) / eps
+            times = np.empty(n_phys, dtype=np.float64)
+            values = np.empty(n_phys, dtype=np.complex128)
+            for p in range(n):
+                g = n - p
+                if g % 2 == 1:  # S_1 sub-step
+                    m = (g + 1) // 2  # physical step 1..n_phys
+                    val = left[p] @ (sel_mats[p] @ right[p])
+                    times[m - 1] = m * eps
+                    values[m - 1] = coeff * complex(_scalar(val))
 
         if np.max(np.abs(values.imag)) > _IMAG_REL_TOL * (np.max(np.abs(values.real)) + 1e-12):
             raise ValueError("coupling polarization has a non-negligible imaginary part")

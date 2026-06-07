@@ -29,10 +29,10 @@ where = ["src"]
 testpaths = ["tests"]
 # Make the src-layout package importable without an editable install.
 pythonpath = ["src"]
-# integration/benchmark tests are opt-in (run with `-m integration` etc.);
-# the default run is the fast unit suite.
-addopts = "-ra -m 'not integration and not benchmark'"
+# integration tests are opt-in (run with `-m integration`); the default run is
+# the fast unit suite.  Performance scripts live in tests/benchmarks/ as
+# `perf_*.py` (not collected by pytest) -- run them directly.
+addopts = "-ra -m 'not integration'"
 markers = [
-    "integration: end-to-end physics reproduction (slower than unit tests)",
-    "benchmark: performance/accuracy benchmarks (run explicitly, not in CI)",
+    "integration: end-to-end smoke checks (slower than unit tests)",
 ]

@@ -48,6 +48,7 @@ class SolverResult:
     observables: dict = field(default_factory=dict)
     mps: object = None
     evolution: object = None
+    backend: str = ""
 
     @property
     def max_bond(self) -> int:
@@ -75,6 +76,46 @@ class EDMSolver:
         """Build a solver with a fresh :class:`SolverConfig`."""
         return cls(model, SolverConfig(eps=eps, T=T, **kwargs))
 
+    # -- backend selection -------------------------------------------------
+
+    def _resolve_backend(self):
+        """Return ``(convert, memory, label)`` for the configured backend.
+
+        ``backend='auto'`` resolves to **CPU** for the Phase-1/2 models: the EDM
+        hot path is many sequential medium SVD/QR calls with Python orchestration
+        between them, where the CPU beats the GPU at the bond dimensions these
+        phases reach (benchmarks in ``tests/benchmarks/perf_*`` and the analysis
+        in ``docs/cpu-vs-gpu-edm.md``).  The GPU stays a first-class, validated
+        option via explicit ``backend='gpu'`` -- it becomes the faster path once
+        the Phase-3 decomposition layer (randomized / single-pass SVD) shifts the
+        work onto large GEMM-bound operations.  Falls back to CPU (never raises)
+        if a GPU is requested but unavailable.
+        """
+        from ..backend import ArrayFactory, PrecisionPolicy
+
+        cfg = self.config
+        pref = cfg.backend
+        if pref not in ("auto", "cpu", "numpy", "gpu", "cupy"):
+            raise ValueError(f"unknown backend {cfg.backend!r}")
+        if pref == "auto":
+            pref = "cpu"
+        precision = (
+            PrecisionPolicy.mixed() if cfg.precision == "mixed" else PrecisionPolicy.full_f64()
+        )
+        if pref in ("gpu", "cupy"):
+            factory = ArrayFactory.auto(prefer="cupy", precision=precision)
+        else:
+            factory = ArrayFactory("numpy", precision=precision)
+        # CPU/complex128 needs no cast -- keep the Phase-1 path byte-for-byte.
+        if not factory.is_gpu and precision.contract == "f64":
+            convert = None
+        else:
+            convert = factory.caster("contract")
+        label = ("gpu" if factory.is_gpu else "cpu") + "/" + precision.contract
+        if factory.fallback_reason:
+            label += f" (fallback: {factory.fallback_reason})"
+        return convert, factory.memory, label
+
     # -- main entry point --------------------------------------------------
 
     def solve(self, observables: dict | None = None, *, channel: int = 1) -> SolverResult:
@@ -88,7 +129,11 @@ class EDMSolver:
         channel : int
             Coupling channel whose polarization history is returned.
         """
+        if self.model.bath_type == "separable":
+            return self._solve_separable(observables, channel=channel)
+
         cfg = self.config
+        convert, _memory, backend_label = self._resolve_backend()
         # the efficient Eq.-F2 sweep is first-order specific; second order reads
         # the coupling polarization from the recorded reduced states instead.
         second_order = cfg.expansion_order == 2
@@ -103,6 +148,7 @@ class EDMSolver:
             cutoff_mode=cfg.cutoff_mode,
             ref_index=cfg.ref_index,
             record_rho=need_rho,
+            convert=convert,
         )
 
         if second_order:
@@ -134,6 +180,58 @@ class EDMSolver:
             observables=extra,
             mps=ev.mps,
             evolution=ev,
+            backend=backend_label,
+        )
+
+    # -- separable bath (outer-loop recursion) ----------------------------
+
+    def _solve_separable(self, observables: dict | None, *, channel: int) -> SolverResult:
+        """Solve a separable-bath model (Eq. 21 outer loop over sub-baths).
+
+        Returns the all-times coupling-channel polarization for the full bath
+        (``<S_a(t)>`` vs ``t``; channel ``3`` is ``<S_z>`` for the Gaudin model).
+        ``bond_dims`` reports the maximum bond after folding in each sub-bath;
+        the per-time bond dimension ``D_t`` (Fig. 6b) is ``result.mps.bond_dims``,
+        and per-sub-bath final states / bonds are on ``result.evolution``.
+        """
+        if observables:
+            raise NotImplementedError(
+                "custom per-time observables are not supported for separable baths; "
+                "use channel polarization, or read result.evolution.density_matrices"
+            )
+        cfg = self.config
+        convert, memory, backend_label = self._resolve_backend()
+        ev = self.evolution.run(
+            self.model,
+            self.kernel_engine,
+            cfg.eps,
+            cfg.n_steps,
+            max_bond=cfg.max_bond,
+            cutoff=cfg.cutoff,
+            cutoff_mode=cfg.cutoff_mode,
+            ref_index=cfg.ref_index,
+            record_rho=cfg.record_rho,
+            sub_baths=cfg.sub_baths,
+            convert=convert,
+            memory=memory,
+        )
+        _, pol = ObservableExtractor.coupling_polarization_history(
+            ev.mps, cfg.eps, channel=channel, order=cfg.expansion_order
+        )
+        # The separable EDM's open-arm interventions sit one step earlier than the
+        # single-bath grid: the sweep yields <S_a(t)> at t = 0, eps, ..., (N-1) eps
+        # (matching Fig. 6, which starts at t = 0 with <S_z> = 1/2).  The final-time
+        # state is available as result.evolution.density_matrices[-1].
+        times = cfg.eps * np.arange(len(pol))
+        return SolverResult(
+            times=times,
+            polarization=pol,
+            bond_dims=ev.bond_dims,
+            truncation_errors=ev.truncation_errors,
+            observables={},
+            mps=ev.mps,
+            evolution=ev,
+            backend=backend_label,
         )
 
     # -- convergence helpers ----------------------------------------------
@@ -163,6 +261,8 @@ class EDMSolver:
         return dev, ok
 
 
-def solve(model, *, T: float, eps: float, observables: dict | None = None, **kwargs) -> SolverResult:
+def solve(
+    model, *, T: float, eps: float, observables: dict | None = None, channel: int = 1, **kwargs
+) -> SolverResult:
     """Convenience one-shot solve."""
-    return EDMSolver.from_model(model, T=T, eps=eps, **kwargs).solve(observables)
+    return EDMSolver.from_model(model, T=T, eps=eps, **kwargs).solve(observables, channel=channel)

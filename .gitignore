@@ -24,6 +24,11 @@ env/
 examples/data/
 examples/pictures/
 
+# Context-only docs (not part of the project): private technical plan and the
+# public arXiv preprint PDF. The tracked docs/*.md dev-notes stay versioned.
+docs/edm_technical_plan.md
+docs/*.pdf
+
 # Editor / OS
 .vscode/
 .idea/
