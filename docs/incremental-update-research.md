@@ -460,3 +460,76 @@ same machinery §10/§12 flagged, now identified as the *dominant* cost rather t
 the transport. Until then the unmodified pipeline is the fastest option; the tier
 scheme remains validated as correct/faithful and useful for *what it returns*
 (spectrum/rotation, §11), not for raw fold speed. Examples-only; pipeline unchanged.
+
+### 12c. Correction: the bond bloat in §12/§12b was a bug (r_cap cap)
+
+> **The §12 and §12b numbers (0.31× / 0.39×, 2.4e-3 error) were produced with a
+> bug and are superseded by this section.**
+
+Investigating why the adaptive bonds reached **157 vs the baseline 95** (they
+should match — §11 showed `dD=0` in the saturated zone) revealed a cap bug in
+`tier_decompose`. Per-fold from the *same* baseline input the adaptive was
+faithful (bond ≈ baseline, rho_err ~1e-8), so the bloat had to come from the
+adaptive's own trajectory. Direct comparison of the bond sequence pinpointed it:
+
+```
+adaptive bonds: [8, 16, 32, 64, 128, 155, 157, ...]   <- doubling, bloats
+baseline bonds: [16, 40, 78, 87, 90, 95, 95, ...]
+```
+
+**Root cause.** The residual capture used `r_cap = min(D_old, m, n)`. The fold
+multiplies the bond by `D_a = 4` (uncompressed `= 4·D_old`), so the residual rank
+can be up to `~3·D_old`. Capping it at `D_old` lets the merged basis
+`[U_old | W]` hold at most `2·D_old` columns → in **early/strong folds** (where the
+true residual rank `>> D_old`) the residual is **under-captured**, the state is
+corrupted, and every subsequent fold's residual saturates the cap → the bond
+**doubles** until it plateaus (~157). Confirmed by lifting the cap:
+
+```
+r_cap = D_old (buggy): [8,16,32,64,128,161,161,...]   bloats
+r_cap = min(m,n)     : [16,47,83,90,104,104,104,...]  matches baseline (109)
+```
+
+**Reconciliation with "new directions cut in half" (§11).** That `r_eff ~ 0.5·D`
+was a **saturated-zone** measurement, where the cap never binds (`r_eff < D_old`)
+and the adaptive is faithful. The bloat lived entirely in the **early folds**,
+where `r_eff ~ 3·D` and the `D_old` cap mutilated it — a different regime, not a
+contradiction.
+
+**Fix.** Probe the residual with a sensible cap `2·D_old + 16`; if even that
+saturates (genuinely high-rank residual, early fold), fall back to a full SVD of
+`M` (a "Tier 0" = baseline step). Correct everywhere, still cheap where `r_eff` is
+small.
+
+**Corrected end-to-end (K=24, T=3, eps=0.2, xi=1e-6, CPU):**
+
+| | buggy §12 | **fixed §12c** |
+|---|---|---|
+| `<S_z(t)>` max abs error vs baseline | 2.4e-3 | **4.3e-6** (essentially exact) |
+| adaptive wall / baseline 49.5 s | 158.2 s → 0.31× | **60.9 s → 0.81×** |
+| decomposition time | 47 s (bloated) | 22.7 s |
+| tier coverage | — | T1 16.7% / T1.5 35.2% / T2 48.1% / T0 0% |
+| T1.5 with `n_new(√ξ)=0 ∧ dD=0` | — | 245/245 (100%) |
+
+So the corrected projection-based adaptive (with the per-bond probe + merge) is
+**accurate (4e-6) and close to baseline (0.81×)**. Adding the §12b improvements on
+top — **hard-coded tier** (drop the probe/decision) and **projection-free
+Tier-1.5/2** (rSVD directly on `M`) — finally turns it positive
+(`adaptive_tiers_hardcoded.py`, rebuilt on the fixed oracle):
+
+| variant | wall | speedup | max `\|d<Sz>\|` |
+|---|---|---|---|
+| baseline pipeline | 49.6 s | 1.00× | — |
+| hard-coded, T1=project | 46.5 s | **1.07×** | 5.9e-6 |
+| hard-coded, T1=rsvd | 43.7 s | **1.14×** | 6.2e-7 |
+
+**Net (corrected).** With (1) the cap bug fixed, (2) the tier hard-coded (cheap
+predictor), and (3) Tier-1.5/2 projection-free, the adaptive fold is **~1.14×
+faster than the pipeline at matched accuracy (6e-7)** — and `T1=rsvd` (no
+projection/transport at all) is both fastest and most accurate, so Tier-1's
+projection/streaming-carry is unnecessary here. The speedup is modest because it
+is **capped by the shared left-canonicalisation** (~66% of the fold, §12b): the
+decomposition shrank from ~14 s (baseline SVD) to ~9 s, saving ~5 s of ~49 s ≈ the
+observed ~1.1×, right at the canon-limited ceiling (~1.4×). To go beyond it the
+canonicalisation itself must be carried across folds (streaming gauge), the lever
+identified in §12b. Examples-only; pipeline unchanged.

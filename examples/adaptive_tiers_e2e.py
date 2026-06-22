@@ -112,10 +112,21 @@ def tier_decompose(M, U_old, *, xi, ref_index, max_bond, rng):
         return (U_new * s[:k], Vh[:k], k, "T1",
                 {"eta": eta, "n_new_sqrtxi": _n_new(U_new), "dD": k - D_old})
 
-    # residual present: single-pass incremental decomposition (the probe)
+    # residual present.  Probe its rank with a *sensible* cap.  The fold can add
+    # up to ~(D_a-1)*D_old new directions; a fixed D_old cap mutilates early/strong
+    # folds (residual rank >> D_old) -> under-capture -> bond bloat.  So allow up to
+    # ~2*D_old+buffer, and if even that saturates, the residual is genuinely high
+    # rank (early fold) -> fall back to a full SVD of M (= baseline, Tier 0).
     s_ref = float(np.linalg.svd(P, compute_uv=False)[min(ref_index, P.shape[0] - 1)])
-    r_cap = int(min(D_old, M.shape[0], M.shape[1]))
-    Wp, srp, _ = randomized_svd(Mperp, r_cap, n_iter=0, rng=rng)
+    cap = int(min(2 * D_old + 16, M.shape[0], M.shape[1]))
+    Wp, srp, _ = randomized_svd(Mperp, cap, n_iter=0, rng=rng)
+    if srp.size and srp[-1] > xi * s_ref:                  # cap saturated: high-rank residual
+        Uf, sf, Vhf = np.linalg.svd(M, full_matrices=False)
+        k = truncation_rank(sf, cutoff=xi, cutoff_mode="rel_ref",
+                            ref_index=ref_index, max_bond=max_bond)
+        return (Uf[:, :k] * sf[:k], Vhf[:k], k, "T0",
+                {"eta": eta, "n_new_sqrtxi": _n_new(Uf[:, :k]), "dD": k - D_old})
+
     r_eff = max(1, int(np.count_nonzero(srp > xi * s_ref)))
     US, Vh, k, U_new = _merge_decompose(M, U_old, Wp[:, :r_eff], xi, ref_index, max_bond)
     n_new, dD = _n_new(U_new), k - D_old
@@ -249,7 +260,7 @@ def main():
     print(f"  total wall-clock:  baseline {wall_base:.1f}s   adaptive {wall_ad:.1f}s   "
           f"speedup {wall_base/wall_ad:.2f}x")
     print(f"  tier coverage over {tot} (L,tau) bonds:")
-    for t in ("T1", "T1.5", "T2"):
+    for t in ("T1", "T1.5", "T2", "T0"):
         if t in cov:
             print(f"    {t:>5}: {cov[t]:>5} bonds ({100*cov[t]/tot:>4.1f}%)  "
                   f"sum wall {tier_time[t]*1e3:>8.1f} ms  "

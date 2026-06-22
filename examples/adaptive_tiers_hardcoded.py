@@ -92,7 +92,11 @@ def hardcoded_compress(unc, ctx, lookup, L, t1_mode, old_iso, rng):
         tier, k0 = lookup.get((L, p), ("T2", min(chil, dp * chir)))
         k = max(1, min(k0, chil, dp * chir))
         t0 = time.perf_counter()
-        if tier == "T1" and t1_mode == "project":
+        if tier == "T0":                                        # full-SVD fallback (early fold)
+            U, s, Vh = np.linalg.svd(M, full_matrices=False)
+            kk = min(k, s.size)
+            US, Vhk = U[:, :kk] * s[:kk], Vh[:kk]
+        elif tier == "T1" and t1_mode == "project":
             U_old, _ = np.linalg.qr(E_list[p - 1].conj().T)     # (chil x D_old)
             Bp = U_old.conj().T @ M
             Ub, s, Vh = np.linalg.svd(Bp, full_matrices=False)
