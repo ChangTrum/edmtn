@@ -411,3 +411,52 @@ a function of `L`/`x` — rather than computing `n_new`/`dD` per bond. Until bot
 in place, the unmodified pipeline is faster; the adaptive scheme is validated as
 *correct and faithful* but its speedup is gated on that streaming machinery.
 Examples-only; pipeline unchanged.
+
+### 12b. Follow-up: hard-coded tier, projection-free 1.5/2 -- and a corrected bottleneck
+
+`examples/adaptive_tiers_hardcoded.py` tests the two improvements from §12:
+(1) **hard-code the tier** per `(L,tau)` from an offline oracle (the cheap-predictor
+assumption -- drops the per-bond decision); (2) **remove the projection from Tier
+1.5/2** (rSVD directly on `M`, no `U_L`, no transport); Tier 1 stays pure
+projection, with `--t1 project` (transport) vs `--t1 rsvd` to test if it is even
+needed. Same K=24/T=3/eps=0.2/CPU setting.
+
+| variant | wall | speedup | max `\|d<Sz>\|` |
+|---|---|---|---|
+| baseline pipeline | 49.5 s | 1.00× | — |
+| §12 adaptive (per-bond decision, projection) | 158.2 s | 0.31× | 2.4e-3 |
+| hard-coded, T1=project | 135.9 s | 0.36× | 1.8e-3 |
+| hard-coded, T1=rsvd | 128.2 s | 0.39× | 1.8e-3 |
+
+What the experiment establishes:
+
+* **Hard-coding the tier helped** (158→128 s): the per-bond decision/probe cost
+  ~30 s. Still 0.39×.
+* **Tier-1's projection is unnecessary for accuracy**: `--t1 project` and
+  `--t1 rsvd` give *identical* error (1.81e-3); the transport it needs is only
+  ~3.3 s (not the ~110 s §12 guessed -- **that attribution was wrong**).
+* **Removing the projection did NOT help end-to-end.** It does cut the per-bond
+  decomposition (T1.5 52→24 ms, T2 87→56 ms, no probe/merge), but two facts sink
+  it: (a) cold rSVD at rank `~D` is *not* cheaper than LAPACK full SVD (≈6 GEMMs of
+  `O(mnD)` vs one `O(m²n)`); (b) the decomposition is not the bottleneck anyway.
+
+**Corrected bottleneck (the key result).** A clean component breakdown of the
+baseline fold (K=24) is:
+
+| component | time | share |
+|---|---|---|
+| `fold_uncompressed` (MPO×MPS) | 0.8 s | 2% |
+| **`left_canonicalize` (QR sweep on the uncompressed MPS)** | **~32.5 s** | **66%** |
+| full-SVD truncation (what the tiers optimise) | ~14 s | 28% |
+
+The **left-canonicalisation QR sweep dominates (~66%), not the SVD (~28%)**.
+Folding+canonicalisation is shared by baseline and every adaptive variant, so no
+amount of decomposition cleverness (tiers, rSVD, projection, CS) can beat the
+baseline by more than ~1.4× — and rSVD-at-rank-`D` is actually slower than the
+LAPACK SVD, so the variants lose. **The real optimisation target is the
+canonicalisation**: avoid re-canonicalising the full uncompressed MPS every fold
+by carrying the canonical form across folds (streaming gauge maintenance) — the
+same machinery §10/§12 flagged, now identified as the *dominant* cost rather than
+the transport. Until then the unmodified pipeline is the fastest option; the tier
+scheme remains validated as correct/faithful and useful for *what it returns*
+(spectrum/rotation, §11), not for raw fold speed. Examples-only; pipeline unchanged.
