@@ -363,3 +363,51 @@ reaches cutoff, recovers the spectrum near-exactly, runs at parity-or-better wit
 rSVD (not ~10⁴× slower), and yields a concrete pipeline tweak (single-pass
 residual rSVD). It is an *enhancement/auxiliary* to the two-tier scheme, not a
 replacement for rSVD.
+
+---
+
+## 12. End-to-end adaptive 3-tier algorithm (L=0..K) vs the pipeline
+
+`examples/adaptive_tiers_e2e.py` runs the full fold `L=0..K` with a per-bond
+adaptive compressor and compares to the **unmodified pipeline** (`EDMSolver`, the
+Fig. 6 algorithm) at identical settings. Per bond, from the projection
+`B = U_L^H M`, `M^perp = M - U_L B`, `eta = ‖M^perp‖/‖M‖`:
+
+- **Tier 1** (`eta < xi`): pure projection (in-span SVD of `B`).
+- **Tier 1.5** (`eta ≥ xi`, residual "easy"): single-pass rSVD of `M^perp` +
+  merge/truncate — accepted iff the computed `n_new(√ξ)=0` and `dD=0`.
+- **Tier 2** (otherwise): cold rSVD (2 power iters) + merge/truncate.
+
+Orthogonality is monitored via `|Tr ρ(T) − 1|` with a re-canonicalisation trigger.
+
+**Results (K=24, T=3 g⁻¹, eps=0.2, xi=1e-6, M5 Air / CPU):**
+
+| metric | value |
+|---|---|
+| `<S_z(t)>` max abs error vs baseline | **2.42e-3** (algorithm correct) |
+| tier coverage | T1 14.5% / T1.5 22.7% / T2 62.8% |
+| T1.5 bonds with `n_new(√ξ)=0 ∧ dD=0` | **158/158 (100%)** (faithful) |
+| re-canonicalisations triggered | 0 (orthogonality held) |
+| baseline wall / adaptive wall | 49.4 s / 158.2 s → **0.31× (3.2× slower)** |
+| adaptive decomposition time | 47 s (≈ baseline *total*); rest ≈ transport overhead |
+
+**Verdict — accurate & faithful, but NOT faster (naive implementation).** Two
+costs sink it:
+1. **Per-fold subspace transport.** Building `U_L` in each bond's basis
+   (left-canonicalising the *uncompressed* L+1 MPS + the cross-overlap transfer)
+   scales like the uncompressed bond (`~4D`) — i.e. like the baseline's own SVD
+   cost — and dominates (~110 s of 158 s).
+2. **Faithful tier decision is not cheap.** `n_new(√ξ)` (principal-angle
+   definition) and `dD` are properties of the *result*; deciding them requires a
+   probe decomposition, so the decision costs about as much as just doing the
+   compression. (The residual-singular-value shortcut does **not** reproduce the
+   principal-angle `n_new` — verified.)
+
+The decomposition FLOPs per bond can be made smaller than a full SVD, but only if
+(a) the subspace is **carried across folds with streaming gauge tracking** instead
+of re-transported each fold (the hard part flagged in §10), and (b) the tier is
+chosen from a **cheap predictor** — e.g. the `η ≈ 0.16 x^0.85` scaling law (§4) as
+a function of `L`/`x` — rather than computing `n_new`/`dD` per bond. Until both are
+in place, the unmodified pipeline is faster; the adaptive scheme is validated as
+*correct and faithful* but its speedup is gated on that streaming machinery.
+Examples-only; pipeline unchanged.
