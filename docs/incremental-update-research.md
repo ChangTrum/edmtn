@@ -294,3 +294,72 @@ PYTHONPATH=src python examples/cs_recovery_poc.py                  # §7 CS vali
 - **CS, only if.** Revisit CS solely if measurements can be formed without
   materialising `M` (so the cost is `O(p·rank)` not `O(mn·p)`), e.g. directly from
   the MPO×MPS factors during contraction.
+
+---
+
+## 11. Addendum — transition-zone rotation tracking (Procrustes)
+
+`examples/rotation_tracking_poc.py` (K=24, folds L=16/19/22). In the transition
+zone the bond is saturated (`dD = 0`, `n_new(√ξ) = 0`) yet still weakly rotates
+(`n_new(ξ) > 0`). The change of left subspace is then a **rotation plus a small
+tilt**: `U_{L+1} = U_L R + (out-of-span)`, with `R` the optimal Procrustes
+rotation (unitary polar factor of `E = U_L^H U_{L+1}`). Measured: the Procrustes
+residual `‖U_{L+1} − U_L R‖` equals the chordal distance `√Σsin²θ` to ~1e-5
+(identity by construction), confirming the rotation picture.
+
+**Rotation tracking** = project `B = U_L^H M` (the Tier-1 byproduct), then take a
+small SVD of the *reduced* `D×n` matrix: `B = R Λ V^H`. This yields the rotation
+`R` and the full Schmidt spectrum `Λ` from a `D`-sized decomposition — no random
+projection / power iteration.
+
+| measured (transition zone) | value |
+|---|---|
+| premise `\|procrustes − chordal\|` | ≤ 4.5e-5 (rotation + tilt confirmed) |
+| spectrum recovery `‖Λ_track − Λ_true‖` | median **3.7e-10** (near-exact) |
+| decomposition speedup | **4.9×** vs full SVD, **1.6×** vs rSVD |
+| reconstruction error | `= η` (the dropped out-of-span tilts) |
+| bonds with `η ≤ ξ` (track already cutoff-accurate) | ~27% |
+
+**Verdict — partial, useful.** Rotation tracking is the cheap, *deterministic*
+way to read a bond's **Schmidt spectrum and rotation** in this zone (≈exact, ~5×
+cheaper than full SVD, on a `D×n`/`D×D` matrix instead of `m×n`). It **fully
+replaces rSVD where `η ≤ ξ`** (~27% of bonds). Where `η > ξ`, the "weak rotation"
+is `r_eff` (15–52) genuine small-angle out-of-span tilts carrying energy `η`; those
+are real content above cutoff and still need capturing (rSVD / incremental update)
+for strict reconstruction — so rotation tracking is an **auxiliary** to Tier 2,
+not a universal replacement, and the headline "O(D²)" is really an `O(D²n)`/`O(D³)`
+reduced decomposition (truly `O(D²)` only if `R` is tracked incrementally rather
+than recomputed). Pipeline unchanged; this is an examples-only study.
+
+### 11b. Incremental tracking at cutoff vs rSVD
+
+`examples/incremental_rotation_poc.py` pushes the idea to *cutoff* reconstruction:
+to reach `xi` the in-span rotation must be augmented by capturing the out-of-span
+residual (`r_eff` tilts). Tested at cutoff against cold rSVD across the zone:
+
+| finding | result |
+|---|---|
+| power iterations needed? | **no** — single-pass rSVD (n_iter=0) reaches cutoff (median residual err 2.2e-7 vs cold 2-iter 1.8e-7) |
+| single-pass vs cold 2-iter rSVD | **~2-3× faster** (drops 2 power iterations), same accuracy |
+| incremental (in-span SVD + single-pass residual) vs cold rSVD | **0.94× (~parity, slightly slower)** |
+| incremental vs single-pass rSVD | **0.37× (incremental ~2.7× slower)** — the in-span SVD is overhead |
+| spectrum recovered by incremental | sv_err median **8e-10** (near-exact) |
+| rotation per fold (bond τ=13) | max angle 1.7e-2 → 9e-3 → 2e-3 rad over L=16/19/22 (small, decreasing) |
+
+**Verdict.** Incremental rotation tracking **does not beat rSVD for cutoff
+compression** — reaching cutoff means capturing the `r_eff` out-of-span tilts
+(O(mn·r_eff)), the same dominant cost as rSVD, and the in-span SVD is extra. The
+genuine, actionable speedup is orthogonal to rotation tracking: **the residual
+spectrum decays fast enough that a single-pass rSVD (no power iterations) reaches
+cutoff and is ~2-3× faster than the current cold 2-iter rSVD** — a low-risk Tier-2
+tweak. Rotation tracking's distinctive value stays the clean rotation `R` +
+Schmidt spectrum it returns for ~free (useful for entanglement diagnostics /
+adaptive truncation, not for plain compression). The slowly-evolving per-fold
+rotation suggests cross-fold composition of `R` is feasible, but realising it
+needs the MPS gauge bookkeeping (the same hard part flagged in §10).
+
+**Net (vs CS, §7).** This line is far more promising than compressed sensing: it
+reaches cutoff, recovers the spectrum near-exactly, runs at parity-or-better with
+rSVD (not ~10⁴× slower), and yields a concrete pipeline tweak (single-pass
+residual rSVD). It is an *enhancement/auxiliary* to the two-tier scheme, not a
+replacement for rSVD.
