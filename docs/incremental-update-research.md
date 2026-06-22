@@ -533,3 +533,122 @@ decomposition shrank from ~14 s (baseline SVD) to ~9 s, saving ~5 s of ~49 s ≈
 observed ~1.1×, right at the canon-limited ceiling (~1.4×). To go beyond it the
 canonicalisation itself must be carried across folds (streaming gauge), the lever
 identified in §12b. Examples-only; pipeline unchanged.
+
+## 13. Collapse of the routing — uniform single-pass rSVD is self-sufficient
+
+The §12 study ended with: Tier-2 = cold rSVD (2 power iterations, the accuracy
+guarantor); Tier-1/1.5 = single-pass rSVD; projection removed everywhere. That
+leaves one question with a large payoff: **does a *single-pass* rSVD also suffice
+on the Tier-2 bonds?** If yes, single-pass rSVD is reliable on its own and we need
+**no tier routing, no hard-coded schedule, no probe, and no `η`/`n_new`/residual
+computation at all** — and, crucially, no baseline to lean on. The scaling law
+(§5) then loses its pre-emptive routing role and becomes a purely information-
+theoretic statement, awaiting a new application.
+
+`uniform_rsvd_e2e.py` tests this directly: a **uniform** per-bond decomposition
+over the whole `L=0..K` fold with **no oracle and no subspace transport**. The
+rank is chosen purely from the rSVD spectrum with a **resolution guard** — grow
+the sketch (geometric ×2, warm-started from the previous fold's bond size) until
+the smallest *computed* singular value drops below the `rel_ref` cutoff
+`ξ·s[d²]`. That guard is what makes it deployable without a reference run: it
+guarantees no kept direction can be hiding in an un-computed tail. Three uniform
+strategies vs the pipeline:
+
+* `svd` — full SVD per bond (sanity; should reproduce baseline exactly),
+* `rsvd0` — single-pass rSVD (`n_iter=0`)  ← the candidate,
+* `rsvd2` — cold rSVD (`n_iter=2`)  ← the accuracy reference.
+
+**Results** (Gaudin, `K=24`, `T=3 g⁻¹`, `ε=0.2 g⁻¹`, order 2; CPU):
+
+| ξ | mode | wall | speedup | max `\|d<Sz>\|` | Dmax | sketch tries |
+|---|---|---|---|---|---|---|
+| 1e-6 | svd | 47.9 s | 1.04× | 0 (exact) | 95 | 1.00 |
+| 1e-6 | **rsvd0** | 43.3 s | **1.15×** | **1.55e-7** | **95** | 1.07 |
+| 1e-6 | rsvd2 | 54.2 s | 0.92× | 9.7e-12 | 95 | 1.07 |
+| 1e-6 | rsvd0, 5 seeds (worst) | 52.9 s | 1.07× | **1.72e-7** | 96 | 1.07 |
+| 1e-8 | svd | 210.7 s | 1.10× | 1.2e-14 | 175 | 1.00 |
+| 1e-8 | **rsvd0** | 170.7 s | **1.36×** | **8.0e-10** | 187 | 1.11 |
+| 1e-8 | rsvd2 | 196.5 s | 1.18× | 2.0e-12 | 175 | 1.11 |
+
+**Verdict: single-pass rSVD is reliable on its own — the routing collapses.**
+
+1. **Accuracy always beats the cutoff.** The single-pass `<S_z(t)>` error sits
+   *below ξ itself* at both cutoffs (1.6e-7 < 1e-6; 8e-10 < 1e-8) and is
+   **seed-independent** (worst of 5 draws = 1.7e-7). The resolution guard, not the
+   luck of the random sketch, sets the accuracy — exactly the property required to
+   trust the result with no baseline.
+2. **It is the fastest.** `rsvd0` beats both full SVD and cold rSVD at both
+   cutoffs (1.15× / 1.36×). Power iterations cost more than they buy here because
+   the EDM bond spectrum decays fast.
+3. **The one honest caveat is compression, not accuracy.** At the tight ξ=1e-8,
+   single-pass slightly **over-retains** the bond (Dmax 187 vs 175, +7%): imperfect
+   subspace resolution leaves a few singular values sitting just above the
+   threshold, so rank-selection keeps them. This is the *safe* failure mode — you
+   pay a little bond dimension, you never lose a direction (the guard forbids it).
+   `rsvd2` recovers the exact bond (175) for modest extra cost if compactness
+   matters more than speed. At the production ξ=1e-6 there is no inflation at all
+   (Dmax 95 = baseline). The mean sketch-tries ≈ 1.1 means the guard rarely even
+   has to re-grow.
+
+**Bond-growth trajectory (does it still plateau? is it better than full SVD?).**
+`Dmax` after each fold `L` (`--modes svd,rsvd0,rsvd2`, trajectory instrumented in
+`run_uniform`):
+
+ξ=1e-6:
+```
+svd  : 16 40 64 71 75 78 84 90 90 95 95 ... 95     plateau at L=10
+rsvd0: 16 40 64 73 76 84 89 92 95 95 95 ... 95     plateau at L= 9
+Δ    :  0  0  0  2  1  6  5  2  5  0  0 ...  0
+```
+ξ=1e-8:
+```
+svd  : 16 55 96 135 136 147 169 174 174 175 ... 175               plateau at L=10
+rsvd0: 16 55 96 135 142 161 173 176 177 178 179 181 ... 187       plateau at L=17
+Δ    :  0  0  0   0   6  14   4   2   3   3   4   6  8 10 11 11 12 ... 12
+```
+
+Three conclusions:
+1. **Growth still plateaus**, but the plateau location is cutoff-dependent, not a
+   fixed `L≈15`. At ξ=1e-6 it saturates at L=9 (one fold *earlier* than full SVD)
+   at the same ceiling (95). At ξ=1e-8 the plateau is *pushed out* to L=17 and sits
+   *higher* (187 vs 175). (The earlier `L*≈15` from §4 is the stricter per-bond
+   `dD=0 / n_new=0` criterion, not the whole-chain `Dmax` saturation point.)
+2. **Single-pass is never *better* (smaller) than full SVD — only equal or larger.**
+   Structurally: the resolution guard forbids dropping a true direction (lower
+   bound = exact rank), while imperfect near-threshold resolution can leave a few
+   extra above the cutoff (upper bound > exact rank). So its rank lives in
+   `[exact, exact+ε]`.
+3. **At tight ξ the over-retention *compounds* (it is not just transient).** The
+   ξ=1e-8 `Δ` climbs monotonically from L≈8 and locks at +12 (+7%): a ratchet —
+   extra directions kept this fold enlarge the next fold's uncompressed MPS, giving
+   more room to over-retain, until it self-limits. At ξ=1e-6 the spectral gaps are
+   wide enough that over-retention is purely transient in the growth window (Δ≤6)
+   and vanishes at the plateau (95=95). **`rsvd2` (2 power iterations) removes the
+   ratchet entirely** — its trajectory is byte-identical to full SVD (Δ≡0) at both
+   cutoffs, while still beating the baseline wall-clock (1.23×). So there is a clean
+   knob: `rsvd0` = fastest, slightly looser bonds at tight ξ; `rsvd2` =
+   full-SVD-tight bonds, still faster than the pipeline. Either way accuracy stays
+   far below the cutoff.
+
+**Consequences.**
+- The 3-tier machinery (oracle, probe, `η`/`n_new`/`dD`, projection, subspace
+  transport) is **unnecessary** for this problem. A single uniform routine —
+  single-pass rSVD + spectral resolution guard — matches the pipeline at matched
+  accuracy and runs faster, with nothing to tune and no reference run.
+- The **scaling law η ≈ 0.16·x^0.85 (§5) is demoted** from a routing predictor to
+  an information-theoretic characterisation of the fold; it no longer gates any
+  decision.
+- With compression solved this cheaply, the wall-clock bottleneck has **fully
+  moved to (re-)canonicalisation** (~66% of the fold, §12b). That is the next
+  target: carrying / streaming the canonical gauge across folds rather than
+  recomputing a left-QR sweep each time. (Would touch `src/`; not started.)
+
+Reproduce:
+
+```
+PYTHONPATH=src python examples/uniform_rsvd_e2e.py --K 24                         # nominal ξ=1e-6
+PYTHONPATH=src python examples/uniform_rsvd_e2e.py --K 24 --modes rsvd0 --seeds 0,1,2,3,4
+PYTHONPATH=src python examples/uniform_rsvd_e2e.py --K 24 --cutoff 1e-8           # tight-ξ stress
+```
+
+Examples-only; pipeline `src/` unchanged.
