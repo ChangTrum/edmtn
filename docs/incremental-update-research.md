@@ -735,3 +735,75 @@ PYTHONPATH=src python examples/canon_alternatives_e2e.py --K 8 \
 ```
 
 Examples-only; pipeline `src/` unchanged.
+
+## 15. Zip-up / fused fold — never form the full-width MPS
+
+§14 only swapped the *kernel* of the canonicalisation; the work was still
+`O(folds × full-width QR)` because the pipeline folds the MPO into the whole MPS
+first (every bond → `D_a·D ≈ 4D`) and *then* canonicalises that wide object. The
+zip-up (Stoudenmire–White, adapted) attacks the width itself:
+
+* **Forward sweep (left→right):** at each site contract the MPO tensor into the
+  running (already-compressed) left bond + MPS tensor, immediately apply a *loose*
+  truncation, push `S V^H` to the next site. The handed-on left bond stays
+  ~`D_loose`, so the working matrix is `(d_phys·D_loose) × (D_a·D_r)` — it never
+  reaches the full `(d_phys·D_a·D) × (D_a·D)`. The U factors are left-isometric, so
+  the sweep also *is* the canonicalisation.
+* **Backward sweep (right→left):** strict-ξ single-pass rSVD (§13).
+
+`zipup_fused_e2e.py`. Two costs flagged up front: the forward sweep does an SVD per
+site (pricier than a QR — mitigated by running it as a single-pass rSVD,
+`--fwd-svd rsvd`), and the two sweeps' truncation errors add — a forward cutoff
+looser than the final ξ discards directions the strict backward pass cannot
+recover. We sweep the forward cutoff and compare to the §14 incumbent.
+
+**K=24, ξ=1e-6 (rSVD forward sweep); reference: §14 CholQR+single = 1.53× @ 7.4e-8:**
+
+| forward cutoff | speedup | max `\|d<Sz>\|` | fwd bond | final Dmax | note |
+|---|---|---|---|---|---|
+| √ξ = 1e-3 | 13.1× | 2.2e-4 | 50 | 50 | inaccurate |
+| ξ^0.85 ≈ 3e-5 | 1.81× | 5.1e-6 | 152 | 124 | *above* ξ — fails the bar |
+| ξ (matched) | 1.41× | 9.6e-7 | 216 | 129 | accurate but borderline + over-retains |
+| *(full-SVD forward, ξ)* | 1.16× | 9.6e-7 | 216 | 116 | rSVD forward beats full SVD |
+
+**Verdict: zip-up works and is physical, but does not beat §14's CholQR+single-pass
+here.** Both flagged caveats are confirmed and *together* cap the win:
+
+1. **Errors add (binding constraint).** The forward loose truncation runs in a
+   *suboptimal left→right gauge*, so to stay accurate it must **over-retain**: at
+   the matched cutoff the forward bond is 216 (vs the true 95) and the final Dmax is
+   129 (vs baseline 95). Tightening the forward cutoff to shrink the bond (ξ^0.85 →
+   bond 152) immediately pushes the error to 5.1e-6, *above* ξ. There is no forward
+   cutoff that is simultaneously well-compressed and accurate-below-ξ — the window
+   the K=8 smoke test hinted at (fwd=ξ → 1.42×) closes at K=24.
+2. **SVD > QR persists.** Running the forward truncation as a single-pass rSVD
+   helps (fwd=ξ: 1.16× → 1.41×, forward 33.8s → 25.2s), but because the forward bond
+   stays ~216 (the over-retention), the forward sweep still costs ~25s.
+
+Net at the best accurate point: **1.41× at 9.6e-7 (borderline, Dmax 129)** vs §14's
+**1.53× at 7.4e-8 (clean, Dmax 95)** — CholQR+single-pass dominates on speed,
+accuracy, and compactness. This matches the Stoudenmire–White observation that
+one-pass zip-up truncation is less accurate than the variational/two-site optimum;
+its single forward pass cannot truncate as tightly as the final canonical pass, and
+that over-retention is exactly what costs the wall-clock here.
+
+**Standing conclusion on the bottleneck.** Three kernel-level swaps (§14: skip-QR,
+CholQR/CholQR2, NS-polar) and one structural reorganisation (§15: zip-up) have been
+tried; the best reliable result remains **CholQR2 / CholQR + single-pass rSVD at
+moderate cutoff (~1.5×)**, and none changes the `O(folds × per-fold re-gauge)`
+asymptotics. The one lever not yet tried is the genuinely algorithmic one flagged
+since §12b: **carry the canonical gauge *across* folds** so each fold updates an
+already-canonical MPS instead of re-orthogonalising from scratch. That requires
+state the current `src/` fold loop discards between folds, so it cannot be
+prototyped purely as a drop-in here — it is the natural next investigation if the
+~1.5× kernel win is not enough.
+
+Reproduce:
+
+```
+PYTHONPATH=src python examples/zipup_fused_e2e.py --K 24 --cutoff 1e-6 \
+    --fwd sqrt,0.85,1 --fwd-svd rsvd          # §15 frontier (rSVD forward)
+PYTHONPATH=src python examples/zipup_fused_e2e.py --K 24 --fwd sqrt,1,1.25,1.5  # full-SVD forward
+```
+
+Examples-only; pipeline `src/` unchanged.
