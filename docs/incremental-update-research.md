@@ -807,3 +807,56 @@ PYTHONPATH=src python examples/zipup_fused_e2e.py --K 24 --fwd sqrt,1,1.25,1.5  
 ```
 
 Examples-only; pipeline `src/` unchanged.
+
+## 16. Single R→L sweep with a carried gauge — killed at the conditioning probe
+
+Can we drop the L→R canonicalisation entirely and do *one* R→L truncation sweep
+that stays correct by carrying a gauge-correction matrix `G_τ`? Recipe under test:
+sweep R→L on the raw folded MPS; at bond τ apply the carried gauge `G_τ` (the
+accumulated gauge offset of the sites to the right), SVD `M_τ·G_τ`, truncate, keep
+the right factor as the new right-canonical site, pass the un-absorbed left factor
+on as `G_{τ-1}`. Correctness hinges on conditioning, and that is a *cheap* probe
+(`gauge_sweep_probe.py`, one fold, no end-to-end run): a single R→L sweep can only
+ever produce right-canonical form, so the carried gauge must compound the left
+block's non-canonicality, and if it (or the correction it stands in for) is
+ill-conditioned the truncation is unstable.
+
+**Two condition numbers per bond, mid-chain folds, both cutoffs (K=24, kill > 1e3):**
+
+| quantity | ξ=1e-6 (median / max / mid-chain) | ξ=1e-8 (median / max / mid-chain) |
+|---|---|---|
+| `cond(G_τ)` carried gauge | 1.6e4–1.3e5 / **~1e6** / 3e4–2e5 | 7e2–8e3 / **~1e8** / 7e2–8e3 |
+| `cond(L_τ)` left environment (intrinsic) | ~7e11 / **~1e12** / ~9e11 | ~8e11 / **~1e12** / ~9e11 |
+
+**Verdict: DEAD.** Both numbers are 3–9 orders past the ~1e3 working range, at
+every internal bond, every fold, both cutoffs (one bond at L=12/ξ=1e-8 dipped to
+7.2e2 — a non-monotonic fluke; its gauge max is still 1e8).
+
+- The intrinsic killer is `cond(L_τ) ≈ 1e12`. The raw folded MPS is so far from
+  canonical that its left environment spans **~1/ξ² ≈ 1e12** in eigenvalue — because
+  the truncation keeps singular values over ~1/ξ = 6 orders, and the environment
+  squares that. Any *correct* single-sweep gauge correction must factor/invert this:
+  the needed `L^{1/2}` has cond ~1/ξ ≈ 1e6, and the actually-carried `G` compounds to
+  1e6–1e8. None is anywhere near 1e3.
+- This is fundamental, not an implementation artefact, and it ties the thread
+  together: it is exactly why §14's `skip-QR` went unphysical (skip-QR *is* this
+  scheme with `G` not even tracked, so the cond-1e12 fold corrupts the truncation),
+  and exactly why the **L→R QR canonicalisation is non-negotiable** — orthogonal
+  (Householder) QR is *immune* to conditioning, so it handles the 1e12-spread fold
+  gracefully, whereas any gauge-*matrix*-carrying scheme inherits that 1e12 and dies.
+  The cost of keeping a wide retained spectrum can be paid only by an orthogonal
+  transform, never by a carried gauge matrix.
+
+So the canonicalisation cannot be replaced by an in-sweep gauge correction. The
+only remaining lever stays the one from §12b/§13/§15: carry the *orthogonal*
+canonical form across folds (so each fold updates an already-canonical, well-
+conditioned MPS) rather than re-gauging the raw 1e12-conditioned fold from scratch —
+which needs `src/` state the fold loop currently discards.
+
+Reproduce:
+
+```
+PYTHONPATH=src python examples/gauge_sweep_probe.py --L 6,12,18,24 --cutoff 1e-6,1e-8
+```
+
+Examples-only; pipeline `src/` unchanged.
