@@ -652,3 +652,86 @@ PYTHONPATH=src python examples/uniform_rsvd_e2e.py --K 24 --cutoff 1e-8         
 ```
 
 Examples-only; pipeline `src/` unchanged.
+
+## 14. Attacking the canonicalisation bottleneck — three orthogonaliser swaps
+
+With compression reduced to a uniform single-pass rSVD (§13), the per-fold
+**left-canonicalisation** is the bottleneck (~66 % of the fold): a Householder-QR
+sweep over the *uncompressed* folded bonds (`m = d_phys·χ_left` up to ~2660 rows,
+`n = χ_right` up to ~750 cols). `canon_alternatives_e2e.py` tests three
+replacements for that QR sweep, each crossed with single-pass and cold rSVD
+truncation, against the pipeline, to the §13 bar (accuracy below the cutoff,
+seed-stable). It isolates **canonicalisation wall-clock** (the target) from
+truncation, and records the orthogonality error `max_p ‖Q_pᴴQ_p − I‖`, the
+`imag/real` ratio of the observable (an unphysical, non-Hermitian state shows up
+here), and the count of bonds that fell back to Householder QR.
+
+**Result at K=24, T=3 g⁻¹, ε=0.2 g⁻¹, order 2 (CPU); canon speedup is vs the QR sweep:**
+
+| approach | ξ=1e-6 canon | ξ=1e-8 canon | orthogonality | accuracy | verdict |
+|---|---|---|---|---|---|
+| **skip QR** (`none`) | — | — | n/a | `imag/re≈2e-2`, `Δ⟨Sz⟩≈1e-2` | **REJECTED: unphysical** |
+| **CholQR** (1-pass) | **1.64×** | 0.81× | ~1e-6 (loose) | ~1e-7 | regime-dependent |
+| **CholQR2** (2-pass) | **1.13×** | 0.87× | ~1e-14 (machine) | ~1e-7 | reliable, regime-dependent |
+| **Newton-Schulz polar** | 0.19× | — | ~1e-14 | ~1e-7 | **REJECTED: too slow** |
+
+1. **Skip QR — rejected (unphysical).** Dropping the gauge entirely makes the
+   right-to-left rSVD truncation see a non-orthonormal left environment, so its
+   singular values are not Schmidt coefficients; truncating to the `rel_ref`
+   cutoff discards the wrong directions. The state goes non-Hermitian
+   (`imag/real ≈ 1.8e-2`, `max|Δ⟨Sz⟩| ≈ 1.1e-2`) and, with no effective
+   truncation, bonds saturate the cap (D=400) so it is also ~25× *slower*. A
+   gauge is structurally required; it cannot simply be removed.
+
+2. **CholQR / CholQR2 — a real but regime-dependent speedup.** The folded bonds
+   are full-rank and, at ξ=1e-6, well-conditioned (median cond ≈ 8, max ≈ 1.9e3),
+   so Cholesky-QR (pure BLAS-3: Gram + Cholesky + triangular solve) beats
+   Householder QR: **CholQR 1.64× and CholQR2 1.13× on the canonicalisation**, the
+   former giving **1.53× end-to-end** with single-pass rSVD. CholQR2 reaches
+   machine-precision orthogonality (~1e-14) and reproduces the baseline bonds
+   (D=95) and accuracy exactly — the *reliable* variant; CholQR-1 is faster but
+   its ~1e-6 orthogonality is marginal. **The advantage reverses at ξ=1e-8**
+   (CholQR 0.81×, CholQR2 0.87× — i.e. slower than QR): the tighter cutoff makes
+   the carried state retain a wider Schmidt spectrum, the bonds grow (n→~750) and
+   their conditioning rises (max cond ≈ 1.3e5 → Gram conditioning ~cond² ≈ 1e10),
+   so CholQR pays shift-escalation / per-bond fallbacks (412 for CholQR-1) and its
+   ~2× flop overhead outweighs the BLAS-3 edge at large n. Net: CholQR2 is a safe
+   drop-in (machine orthogonality, baseline-matching results, self-diagnosing via
+   the fallback count) that **speeds up the bottleneck at moderate cutoff but not
+   at tight cutoff** — no universal win.
+
+   *(Implementation notes that mattered for a fair test: `Q = Q·Rp⁻¹` needs
+   `solve(Rpᴴ, ·)`, not `solve(Rp, ·)` — the transpose bug silently fails the
+   orthogonality check and forces 100 % fallback; and Newton-Schulz must be scaled
+   by a tight σ_max estimate (power iteration on the Gram), not the loose
+   `√(‖A‖₁‖A‖∞)` bound, or the small singular values stall.)*
+
+3. **Newton-Schulz polar — rejected (too slow).** Even correctly scaled and on
+   well-conditioned bonds, NS is ~5× slower than QR (canon 0.19× at K=8) because it
+   iterates the update `X ← 1.5X − 0.5·X(XᴴX)` on the **full tall `m×n`** factor
+   (m up to ~2660), whereas QR/CholQR only repeatedly touch the small `n×n` Gram.
+   NS polar is the wrong tool for tall-skinny canonicalisation; it does not improve
+   at scale (the cost grows with the tall dimension m, which grows with the bond).
+
+**Takeaway.** Of the three, only **CholQR2** is a viable, reliable accelerator,
+and only at moderate cutoff (a real ~1.1–1.6× on the canon step, ~1.5× end-to-end
+with single-pass rSVD). It is not a guaranteed win across cutoffs, and it does not
+change the asymptotics — it is a faster *kernel* for the same O(folds × full-width
+QR) work. A cutoff-robust, order-of-magnitude win still requires the algorithmic
+lever flagged in §12b/§13: **not re-orthogonalising the full uncompressed bond
+from scratch every fold** (streaming/carried gauge, or fusing truncation into the
+gauge pass so the wide matrix is never formed at full width). That touches `src/`
+and is not started.
+
+Reproduce:
+
+```
+PYTHONPATH=src python examples/canon_alternatives_e2e.py --K 24 --cutoff 1e-6 \
+    --canon qr,cholqr,cholqr2 --trunc single,cold        # §14 moderate-ξ (CholQR wins)
+PYTHONPATH=src python examples/canon_alternatives_e2e.py --K 24 --cutoff 1e-8 \
+    --canon qr,cholqr,cholqr2 --trunc single             # §14 tight-ξ (advantage reverses)
+PYTHONPATH=src python examples/canon_alternatives_e2e.py --K 8 \
+    --canon qr,none,cholqr,cholqr2,nspolar --trunc single  # skip-QR + NS evidence
+```
+
+Examples-only; pipeline `src/` unchanged.
