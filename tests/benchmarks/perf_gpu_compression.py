@@ -112,7 +112,7 @@ def run_combo(model, *, T, eps, order, cutoff, max_bond, backend, kind, canon, r
             return None
     make_d = _make_decomp(kind)
     make_c = _make_canon(canon)
-    walls, res = [], None
+    walls, res, peak_gb = [], None, 0.0
     for r in range(repeats + 1):              # r=0 is an untimed warm-up
         t0 = time.perf_counter()
         res = EDMSolver.from_model(
@@ -124,7 +124,15 @@ def run_combo(model, *, T, eps, order, cutoff, max_bond, backend, kind, canon, r
         dt = time.perf_counter() - t0
         if r > 0:
             walls.append(dt)
-    return dict(wall=min(walls), pol=_to_host(res.polarization), dmax=int(res.max_bond))
+    if backend in ("gpu", "cupy"):
+        try:
+            import cupy as cp  # noqa: PLC0415
+
+            peak_gb = cp.get_default_memory_pool().total_bytes() / 2**30
+        except Exception:
+            peak_gb = 0.0
+    return dict(wall=min(walls), pol=_to_host(res.polarization),
+                dmax=int(res.max_bond), peak_gb=peak_gb)
 
 
 def main():
@@ -178,14 +186,17 @@ def main():
     cpu_svd_wall = next((r["wall"] for b, k, c, r in rows
                          if b in ("cpu", "numpy") and k == "svd"), None)
 
-    print(f"\n  {'combo/canon':>22} | {'wall(s)':>8} {'vs cpu-svd':>10} | {'max|dSz|':>9} | {'Dmax':>5}")
-    print("  " + "-" * 66)
+    print(f"\n  {'combo/canon':>22} | {'wall(s)':>8} {'vs cpu-svd':>10} | "
+          f"{'max|dSz|':>9} | {'Dmax':>5} | {'GPU GB':>7}")
+    print("  " + "-" * 76)
     for backend, kind, canon, r in rows:
         n = min(len(r["pol"]), len(ref_pol))
         err = float(np.max(np.abs(np.asarray(r["pol"][:n]) - np.asarray(ref_pol[:n]))))
         spd = f"{cpu_svd_wall / r['wall']:.2f}x" if cpu_svd_wall else "  --"
         label = f"{backend}:{kind}/{canon}"
-        print(f"  {label:>22} | {r['wall']:8.2f} {spd:>10} | {err:9.2e} | {r['dmax']:5d}")
+        mem = f"{r['peak_gb']:7.2f}" if r["peak_gb"] else "      -"
+        print(f"  {label:>22} | {r['wall']:8.2f} {spd:>10} | {err:9.2e} | "
+              f"{r['dmax']:5d} | {mem}")
 
     print("\n  (speedup vs CPU full-SVD pipeline; accuracy vs CPU full-SVD reference)")
 
