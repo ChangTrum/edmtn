@@ -22,6 +22,12 @@ end-to-end and validated against exact references:
   the exact Trotterised reduced dynamics to machine precision and the Fig. 6
   `⟨S_z⟩` / bond-dimension behaviour.
 
+**Phase 3 — faster decomposition (in progress).** A GEMM-based, GPU-friendly
+`RandomizedSVD` compression strategy is implemented and validated against the full
+`StandardSVD` (`< ξ`, seed-stable) on both CPU and GPU. It is the GPU-fast path:
+on a single A800 it runs **7–15× faster than a 256-thread EPYC-9754 CPU**, the lead
+growing with bond dimension (see **Performance** below).
+
 Implemented:
 
 - spin-boson model (generalised Ohmic bath, zero temperature) and Gaudin model
@@ -38,11 +44,12 @@ Implemented:
 - a driver that wires the pipeline from `bath_type` and selects the compute
   backend, plus convergence helpers.
 
-**Compute backend.** Phase 1/2 run on the **CPU** by default — the EDM hot path
-is many sequential medium SVD/QR calls, where the CPU beats the GPU at these
-bond dimensions. The full CuPy/GPU stack is built, validated and selectable
-(`backend='gpu'`), and becomes the faster path with the Phase-3 decomposition
-work. See [docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md).
+**Compute backend.** The default is **CPU** (`backend='auto'`) — with full-SVD at
+small bond dimension the EDM hot path is many sequential medium SVD/QR calls, where
+the CPU is competitive. The full CuPy/GPU stack is built, validated and selectable
+(`backend='gpu'`); paired with `RandomizedSVD` it is the faster path and its lead
+**grows with problem size** (7× → 15× as the bond grows; see **Performance**). See
+[docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md).
 
 ## Layout
 
@@ -85,12 +92,38 @@ res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 The driver picks the compute backend (`backend='auto'` → CPU for Phase 1/2;
 `'gpu'` to force the GPU). `solve(...).backend` reports the choice.
 
+Select the compression strategy explicitly (default is full `StandardSVD`):
+
+```python
+from edmtn.decomposition import RandomizedSVD
+
+# GEMM-based, GPU-friendly; n_iter=0 single-pass (fastest, accuracy < cutoff),
+# n_iter=2 cold (exact-baseline bonds, ~1e-12). See docs/recommended-config.md.
+res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
+            channel=3, backend='gpu', decomposition=RandomizedSVD(n_iter=0))
+```
+
+## Performance
+
+- **Recommended presets** (balanced vs robust, when to use which):
+  [docs/recommended-config.md](docs/recommended-config.md).
+- **GPU scaling** (single A800 vs 256-thread EPYC 9754; single-pass rSVD 7×→15×,
+  growing with bond): [docs/gpu-scaling-benchmark.md](docs/gpu-scaling-benchmark.md).
+- **Compression / decomposition study** (why single-pass rSVD is reliable, the
+  canonicalisation analysis): [docs/incremental-update-research.md](docs/incremental-update-research.md).
+- **Distributed scale-out plan** (multi-GPU + cuQuantum, two-track design):
+  [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+
 ## Environment
 
 Developed against the `quimb` conda env (Python 3.14, quimb 1.14, CuPy 14.1,
 CUDA 13.2, RTX 5090). CuPy/GPU is optional — the default execution path is CPU
 NumPy, the faster choice for the Phase-1/2 problem sizes (CPU vs GPU benchmarks
 and analysis in [docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md)).
+
+On a CUDA machine, add a CuPy wheel matching your CUDA toolkit to enable
+`backend='gpu'`, e.g. `pip install cupy-cuda12x` (CUDA 12.x) or `cupy-cuda13x`.
+CPU-only on Windows/macOS/Linux needs nothing extra.
 
 The env requires `MKL_THREADING_LAYER=TBB` to be set **before NumPy is imported**
 (clashing OpenMP runtimes otherwise crash BLAS/LAPACK), configured at env level:

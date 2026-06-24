@@ -80,10 +80,24 @@ bond dimensions or ≤1e-12 accuracy or bit-reproducibility are required.
 - **zip-up / fused forward sweep**: over-retention caps it at 1.41× < CholQR's 1.53% (§15).
 - **single R→L sweep with carried gauge**: gauge cond ≈ 1e6–1e12 ≫ working range (§16).
 
-## Open question for the GPU port
+## GPU measurement (single A800) — single-pass rSVD validated at scale
 
-Re-measure the CholQR2-vs-Householder crossover on H200 NVL / RTX 5090. On CPU, CholQR2 loses
-to QR at ξ=1e-8 (flop-doubling + shift escalation). On GPU the GEMM throughput may keep CholQR2
-ahead even at tight ξ, which would make `balanced` the right default in *all* regimes and
-relegate Householder QR purely to the conditioning safety-net. Keep both canon strategies
-selectable until this is measured.
+Measured on an A800 vs a 256-thread EPYC 9754 (`docs/gpu-scaling-benchmark.md`):
+single-pass rSVD (`RandomizedSVD(n_iter=0)`, the `balanced` compression) runs
+**7.1× → 10.8× → 15.5× faster than the fully-provisioned CPU full-SVD pipeline**
+as the bond grows χ = 95 → 175 → 325, at accuracy below the cutoff and matching
+bonds — and the advantage **grows with problem size**. rSVD beats GPU full-SVD by a
+steady ~2× (the BLAS-3 payoff). So on GPU, **`balanced` (single-pass rSVD) is the
+clear default**, and the GPU is the path for the large-scale regime (small χ does
+not need it). Also measured: **MKL gives no benefit over OpenBLAS on Zen 4** (tie
+within ~2%) — BLAS choice is immaterial on AMD for this workload.
+
+## Still-open questions
+
+- **CholQR2-vs-Householder crossover on GPU.** On CPU, CholQR2 loses to Householder
+  QR at ξ=1e-8 (flop-doubling + shift escalation); on GPU the GEMM throughput may
+  keep CholQR2 ahead even at tight ξ, making `balanced` the all-regime default and
+  relegating Householder QR to the conditioning safety-net. Needs P2 (CholQR2 in
+  `src/`) before it can be measured. Keep both canon strategies selectable.
+- **FP64 Tensor Core (DMMA) for complex128.** The rSVD GEMMs *should* hit the A800's
+  DMMA, but ZGEMM tensor-core dispatch is unverified (nsight check; Phase-5 item).
