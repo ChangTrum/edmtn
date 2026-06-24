@@ -67,13 +67,25 @@ three-fold, in increasing implementation cost:
 
 **Amdahl caveat, stated honestly:** lever (A) speeds up each site's linear
 algebra but not the serial site/fold ordering, so a *single* solve's speedup
-saturates at the serial fraction. The decisive single-solve win is therefore
-bounded; the biggest multi-GPU payoffs are **(B) fitting problems a single GPU
-can't hold** and **(C) ensemble throughput**. At today's scale (`χ ~ 100`s)
-multi-GPU is *counterproductive* (comm > compute); it only pays in the
-large-`χ` / large-memory regime edmtn is built to reach. The P5a scaling curve
-(GPU lead growing with `χ`) is the empirical signpost for where that regime
-begins.
+saturates at the serial fraction. At today's scale (`χ ~ 100`s) multi-GPU is
+*counterproductive* (comm > compute); it only pays in the large-`χ` regime edmtn
+is built to reach. The P5a scaling curve (GPU lead growing with `χ`) is the
+empirical signpost for where that regime begins.
+
+**Empirical confirmation (Phase-5 item 2, `docs/gpu-scaling-benchmark.md`).** Measured
+on the A800 with the bond **uncapped**: capacity (B) is a **real, near-term hard wall**,
+even for the Gaudin demonstrator. Gaudin's Hamiltonian is time-independent, so its
+memory time is infinite and the EDM bond **grows without bound with evolution time `T`**
+(191 → 643 from T3 → T6 at ξ=1e-8; linear in `T` asymptotically). Peak memory ∝
+`n_sites · χ²`, so a single 80 GB A800 **cannot run** K=24 at **T=9, ξ=1e-8** (OOM) or
+**T=6, ξ=1e-10** — an out-of-memory failure, not a slow run. (An earlier reading that
+"capacity is not the limiter" was an artefact of an artificial `max_bond=400` cap; the
+unbounded growth was hidden. Growth along the *fold index* `L` does plateau under the
+linearly-decreasing-`g` scheme — a separate axis.) **This concretely justifies the
+capacity priority: longer `T` / tighter ξ / larger `K` all bring the single-card wall
+closer, so multi-GPU then multi-node capacity (5.2 → 5.4) is needed to reach the
+long-evolution regime — exactly what edmtn targets.** Lever (A) intra-step wall-clock
+and (C) ensemble remain useful, but (B) capacity is the binding one here.
 
 ## 2. Feature mapping
 

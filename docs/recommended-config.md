@@ -107,5 +107,7 @@ within ~2%) — BLAS choice is immaterial on AMD for this workload.
   χ=371). The hypothesis that GPU GEMM throughput would keep CholQR2 ahead is refuted —
   cuSOLVER `geqrf` is already efficient. Householder QR is the canon default everywhere;
   CholeskyQR2 is kept selectable for the CPU-moderate-ξ niche only.
-- **FP64 Tensor Core (DMMA) for complex128 — still open.** The rSVD GEMMs *should* hit the
-  A800's DMMA, but ZGEMM tensor-core dispatch is unverified (nsight check; Phase-5 item 5.0).
+- **FP64 Tensor Core (DMMA) for complex128 — RESOLVED (engaged; no split needed).** Measured
+  on an A800 (`docs/gpu-scaling-benchmark.md`, item 1): both DGEMM **and** ZGEMM sustain
+  ~19.4 TFLOP/s = ~2× the FP64 CUDA-core peak (~9.7) ≈ the DMMA peak (~19.5). So the complex128
+  rSVD GEMMs already run on the FP64 tensor cores; a real/imag split is unnecessary.

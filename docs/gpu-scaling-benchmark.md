@@ -91,6 +91,65 @@ bonds) — just not faster. Combined with §14 (CholQR2 helps only on CPU at mod
 ξ, loses at tight ξ), **Householder QR is the canonicalisation default in all
 regimes**; CholeskyQR2 stays selectable for the narrow CPU-moderate-ξ niche.
 
+## Item 1 — FP64 Tensor Cores (DMMA): engaged for complex128 too
+
+`perf_fp64_tc.py` on the A800 (achieved TFLOP/s; FP64 CUDA-core peak ~9.7, DMMA
+peak ~19.5):
+
+| N | DGEMM | ZGEMM |
+|---|---|---|
+| 2048 | 16.0 | 17.1 |
+| 4096 | 17.4 | 17.4 |
+| 8192 | **19.3** | **19.4** |
+
+Both DGEMM and ZGEMM reach ~19.4 TFLOP/s ≈ **2× the CUDA-core peak ≈ the DMMA peak**,
+so **FP64 tensor cores are engaged for the complex128 rSVD GEMMs already** — a
+real/imag split is unnecessary. (cuBLAS math-mode toggle wasn't exposed by this CuPy,
+but the achieved throughput is conclusive.)
+
+## Item 2 — single-GPU capacity: the hard wall for Gaudin at long evolution time
+
+**Uncapped** (`max_bond` effectively unlimited), so the bond grows to its natural,
+truncation-determined value. `perf_gpu_compression --combos gpu:rsvd0`, K=24:
+
+| ξ | T | n_sites | natural Dmax | peak GPU GB |
+|---|---|---|---|---|
+| 1e-8 | 3 | 30 | 191 | 0.68 |
+| 1e-8 | 6 | 60 | **643** | 13.29 |
+| 1e-8 | 9 | 90 | — | **OOM** (>80 GB) |
+| 1e-8 | 12 | 120 | — | OOM |
+| 1e-10 | 3 | 30 | 371 | 2.68 |
+| 1e-10 | 6 | 60 | — | **OOM** |
+
+**The earlier "memory is not the limiter" reading was an artefact of an artificial
+`max_bond=400` cap** (the paper's resource-constrained convenience, not a physical
+limit). Removing it changes the picture completely:
+
+- **Gaudin's bond grows without bound with evolution time `T`.** Its Hamiltonian is
+  time-independent → the memory time is *infinite* (unlike spin-boson, which
+  saturates), so the EDM bond keeps growing with `T` (191 → 643 from T3 → T6 at
+  ξ=1e-8; the paper's bound is *linear in T* asymptotically). (Orthogonally, growth
+  along the *fold index* `L` does plateau here — later sub-baths have weaker coupling
+  under the linearly-decreasing-`g` scheme; other `g` profiles are future work.)
+- **Capacity is therefore the hard wall, hit at modest `T`.** Peak memory is
+  dominated by the per-fold working tensors (∝ `n_sites · χ²`), and with `χ` growing
+  in `T` a single 80 GB A800 **cannot run** K=24 at **T=9, ξ=1e-8** (OOM at >83 GB) or
+  **T=6, ξ=1e-10** — tighter ξ (larger bond) hits the wall sooner. It is an
+  out-of-memory failure, not merely a slow run.
+
+**Implication for Phase 5.** Capacity (lever B, Phase 5.2 — multi-GPU then multi-node)
+is a **real, near-term constraint**, not a far-future one: even a modest Gaudin run
+exceeds one card once the evolution time is long enough, and longer `T` / tighter ξ /
+larger `K` only bring the wall closer. This is the concrete justification for the
+multi-GPU capacity priority. (The serial fold/sweep wall-clock grows too, but here the
+OOM binds first.) See `multi-gpu-cuquantum-design.md`.
+
+**Implication for Phase 5.** For the current demonstrator the near-term GPU lever is
+**wall-clock (intra-step / lever A) + ensemble (lever C)**, *not* capacity: capacity
+(lever B, Phase 5.2) only binds once χ reaches the thousands, which requires a
+higher-entanglement regime/model than Gaudin (or uncapped bonds). Stress-testing
+capacity will need such a regime; see `multi-gpu-cuquantum-design.md`.
+
 ## Reproduce
 
 ```
@@ -104,4 +163,8 @@ OMP_NUM_THREADS=256 MKL_NUM_THREADS=256 \
 # P5b canon crossover on a GPU node (compression fixed, vary canonicalisation):
 python tests/benchmarks/perf_gpu_compression.py --K 24 --T 3 --cutoff 1e-8 \
     --combos gpu:rsvd0 --canon householder,cholqr2,cholqr1 --repeats 1
+# Item 1 FP64-TC probe / Item 2 capacity (uncapped bond; peak GPU GB per run):
+python tests/benchmarks/perf_fp64_tc.py --sizes 2048,4096,8192 --reps 5
+python tests/benchmarks/perf_gpu_compression.py --K 24 --T 6 --cutoff 1e-8 \
+    --combos gpu:rsvd0 --max-bond 100000 --repeats 1   # natural bond; T9 OOMs on 80 GB
 ```
