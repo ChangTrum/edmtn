@@ -89,18 +89,62 @@ res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6,
 res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 ```
 
-The driver picks the compute backend (`backend='auto'` → CPU for Phase 1/2;
-`'gpu'` to force the GPU). `solve(...).backend` reports the choice.
+## Configuration
 
-Select the compression strategy explicitly (default is full `StandardSVD`):
+`solve(model, *, T, eps, channel=1, **config)` (and `EDMSolver.from_model`) accept:
+
+| knob | values (default) | meaning |
+|---|---|---|
+| `expansion_order` | `1`, `2` (`1`) | Trotter order (2 = doubled sub-step grid) |
+| `cutoff` | float (`1e-6`) | SVD truncation `ξ` (rule `s_i / s_{d²+1} ≤ ξ`) |
+| `max_bond` | int or `None` (`None`) | hard bond-dimension cap |
+| `backend` | `'auto'`, `'cpu'`, `'gpu'` (`'auto'`) | compute device (`auto` → CPU) |
+| `decomposition` | strategy (`StandardSVD()`) | **compression** (see below) |
+| `canonicalization` | strategy or `None` (`None` → Householder QR) | **canonicalisation** (see below) |
+| `sub_baths` | int or `None` (`None`) | separable bath: fold only the first `L` sub-baths (Fig. 6) |
+
+`solve(...).backend` reports the resolved device.
+
+**Backend.** `'auto'`/`'cpu'` runs on NumPy; `'gpu'` runs on CuPy (needs a matching
+CuPy wheel — see *Environment*; falls back to CPU with a note if no GPU). GPU pays off
+once the bond is large; small problems are CPU-competitive.
+
+**Compression (`decomposition=`)** — import from `edmtn.decomposition`:
 
 ```python
-from edmtn.decomposition import RandomizedSVD
+from edmtn.decomposition import StandardSVD, RandomizedSVD
 
-# GEMM-based, GPU-friendly; n_iter=0 single-pass (fastest, accuracy < cutoff),
-# n_iter=2 cold (exact-baseline bonds, ~1e-12). See docs/recommended-config.md.
+StandardSVD()             # default: exact full SVD (the paper's baseline)
+RandomizedSVD(n_iter=0)   # single-pass rSVD: fastest, accuracy < ξ, GEMM/GPU-friendly
+RandomizedSVD(n_iter=2)   # cold rSVD: exact-baseline bonds, ~1e-12 accuracy
+```
+
+`RandomizedSVD` finds the rank adaptively (a spectral resolution guard), so it is reliable
+with no reference run; single-pass is the GPU-fast default, cold is for exact bonds.
+
+**Canonicalisation (`canonicalization=`)** — import from `edmtn.evolution`:
+
+```python
+from edmtn.evolution import CholeskyQR        # HouseholderQR is the default (pass None)
+
+None                      # default: Householder QR — fastest on GPU and at tight ξ
+CholeskyQR(passes=2)      # BLAS-3 Cholesky-QR2; only wins on CPU at moderate ξ (niche)
+```
+
+Householder QR is conditioning-immune and the measured fastest in every regime except
+CPU-moderate-ξ; keep the default unless you are CPU-bound at `ξ ≳ 1e-6`.
+
+**Recommended presets** (details + when-to-use in [docs/recommended-config.md](docs/recommended-config.md)):
+
+```python
+# balanced (default high-performance, esp. GPU): fastest, accuracy < ξ
 res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
             channel=3, backend='gpu', decomposition=RandomizedSVD(n_iter=0))
+
+# robust (accuracy/stability, exact bonds): Householder QR + cold rSVD
+#   (or decomposition=StandardSVD() for a fully deterministic run)
+res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
+            channel=3, decomposition=RandomizedSVD(n_iter=2))
 ```
 
 ## Performance

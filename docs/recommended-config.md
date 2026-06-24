@@ -26,15 +26,22 @@ dominates — this must be re-measured on the actual H200/5090 (see open questio
 
 | layer | choice |
 |---|---|
-| canonicalisation | **Cholesky-QR2** (shifted Gram; per-bond Householder-QR fallback on ill-conditioned bonds) |
+| canonicalisation | **Householder QR** (the default; fastest on GPU and at tight ξ — see below) |
 | compression | **single-pass randomised SVD** (`n_iter=0`, oversample 10, spectral resolution guard) |
 
 **Why.** Single-pass rSVD is the dominant, regime-robust win: accuracy always below the
 cutoff (1.5e-7 at ξ=1e-6, 8e-10 at ξ=1e-8), seed-independent, no tuning, no reference run
-needed (the resolution guard grows the sketch until the computed tail drops below ξ). CholQR2
-adds the canonicalisation speedup in the common moderate-cutoff regime (machine-precision
-orthogonality ~1e-14) and **self-diagnoses**: any ill-conditioned bond falls back to
-Householder QR automatically, so the preset is never numerically unsafe.
+needed (the resolution guard grows the sketch until the computed tail drops below ξ).
+
+**Canonicalisation = Householder QR (not CholeskyQR2).** Measurement settled this:
+CholeskyQR2 only beats Householder on the *canonicalisation step* on **CPU at moderate ξ**
+(~1.13× there, §14); it **loses at tight ξ on CPU** (flop-doubling + shift escalation, §14)
+and **loses across all ξ on the GPU** (A800 P5b: Householder is fastest, deficit growing to
+−14% at χ=371 — cuSOLVER `geqrf` is already efficient and CholQR2's 2-pass GEMM overhead does
+not pay). Since the deployment target is GPU-primary, Householder QR is the right default
+everywhere. `CholeskyQR(passes=2)` remains available (`canonicalization=CholeskyQR()`,
+machine-precision orthogonality, per-bond Householder fallback) for the narrow CPU-moderate-ξ
+niche, but it is **not** the default.
 
 **Numbers (CPU; GPU expected better):**
 
@@ -44,8 +51,8 @@ Householder QR automatically, so the preset is never numerically unsafe.
 | 1e-8 | ~0.9–1.0× (auto-degrades to QR-level) | 8e-10 (<ξ) | +7% (single-pass over-retain) |
 
 **Trade-offs accepted:** at very tight ξ, single-pass rSVD over-retains the bond by ~7%
-(compounding; §13) and CholQR2 pays a small failed-Cholesky overhead before falling back.
-Both are graceful degradations, not failures.
+(compounding; §13) — a graceful degradation (accuracy still < ξ), not a failure. Use the
+`robust` preset if exact bonds are required.
 
 ## Preset 2 — `robust` (fallback, extreme cases)
 
@@ -92,12 +99,13 @@ clear default**, and the GPU is the path for the large-scale regime (small χ do
 not need it). Also measured: **MKL gives no benefit over OpenBLAS on Zen 4** (tie
 within ~2%) — BLAS choice is immaterial on AMD for this workload.
 
-## Still-open questions
+## Resolved / still-open questions
 
-- **CholQR2-vs-Householder crossover on GPU.** On CPU, CholQR2 loses to Householder
-  QR at ξ=1e-8 (flop-doubling + shift escalation); on GPU the GEMM throughput may
-  keep CholQR2 ahead even at tight ξ, making `balanced` the all-regime default and
-  relegating Householder QR to the conditioning safety-net. Needs P2 (CholQR2 in
-  `src/`) before it can be measured. Keep both canon strategies selectable.
-- **FP64 Tensor Core (DMMA) for complex128.** The rSVD GEMMs *should* hit the A800's
-  DMMA, but ZGEMM tensor-core dispatch is unverified (nsight check; Phase-5 item).
+- **CholQR2-vs-Householder crossover on GPU — RESOLVED (Householder wins).** P2 put
+  CholeskyQR in `src/`; P5b measured it on an A800 (`docs/gpu-scaling-benchmark.md`):
+  Householder QR is fastest at every ξ, the CholQR2 deficit *growing* with χ (−14% at
+  χ=371). The hypothesis that GPU GEMM throughput would keep CholQR2 ahead is refuted —
+  cuSOLVER `geqrf` is already efficient. Householder QR is the canon default everywhere;
+  CholeskyQR2 is kept selectable for the CPU-moderate-ξ niche only.
+- **FP64 Tensor Core (DMMA) for complex128 — still open.** The rSVD GEMMs *should* hit the
+  A800's DMMA, but ZGEMM tensor-core dispatch is unverified (nsight check; Phase-5 item 5.0).

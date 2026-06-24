@@ -69,6 +69,28 @@ Accuracy / bond per point:
 - **T=6 / K=48 axes not completed** (job time limits); the ξ-scan is the primary,
   cleaner bond-growth axis and already establishes the trend.
 
+## P5b — canonicalisation on GPU: Householder vs CholeskyQR (A800)
+
+Same single A800, single-pass rSVD compression fixed, varying only the
+canonicalisation (total solve wall; accuracy vs the Householder run confirms
+CholeskyQR is correct on CuPy):
+
+| ξ | bond | Householder | CholeskyQR2 | CholeskyQR1 |
+|---|---|---|---|---|
+| 1e-6 | 95 | 11.07 s | 12.40 s | 10.63 s |
+| 1e-8 | 191 | **23.93 s** | 28.29 s | 27.40 s |
+| 1e-10 | 371 | **56.59 s** | 64.31 s | 71.83 s |
+
+**Householder QR is the fastest canonicaliser on the GPU at every ξ, and the
+CholeskyQR2 deficit grows with the bond** (−5% → −18% → −14%). The hypothesis that
+GPU GEMM throughput would keep CholeskyQR2 ahead at tight ξ (the open question in
+`recommended-config.md`) is **refuted**: cuSOLVER `geqrf` is already efficient on
+these tall matrices, and CholeskyQR2's 2-pass GEMM overhead does not pay.
+CholeskyQR2 is *correct* on GPU (accuracy 4.7e-8 / 7.6e-10 / 1.1e-11, exact-ish
+bonds) — just not faster. Combined with §14 (CholQR2 helps only on CPU at moderate
+ξ, loses at tight ξ), **Householder QR is the canonicalisation default in all
+regimes**; CholeskyQR2 stays selectable for the narrow CPU-moderate-ξ niche.
+
 ## Reproduce
 
 ```
@@ -79,4 +101,7 @@ python tests/benchmarks/perf_gpu_compression.py --K 24 --T 3 --cutoff 1e-8 \
 OMP_NUM_THREADS=256 MKL_NUM_THREADS=256 \
   python tests/benchmarks/perf_gpu_compression.py --K 24 --T 3 --cutoff 1e-8 \
     --combos cpu:svd --repeats 1
+# P5b canon crossover on a GPU node (compression fixed, vary canonicalisation):
+python tests/benchmarks/perf_gpu_compression.py --K 24 --T 3 --cutoff 1e-8 \
+    --combos gpu:rsvd0 --canon householder,cholqr2,cholqr1 --repeats 1
 ```
