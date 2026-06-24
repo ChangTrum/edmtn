@@ -17,6 +17,7 @@ Not collected by pytest (lives under tests/benchmarks/ as perf_*).  Run directly
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import numpy as np
@@ -24,6 +25,43 @@ import numpy as np
 from edmtn.decomposition import RandomizedSVD, StandardSVD
 from edmtn.driver.solver import EDMSolver
 from edmtn.models import GaudinModel
+
+
+def _blas_name():
+    """Best-effort name+version of the BLAS NumPy is linked against (MKL vs OpenBLAS)."""
+    try:
+        cfg = np.show_config("dicts")            # NumPy >= 2.0
+        b = cfg.get("Build Dependencies", {}).get("blas", {})
+        return f"{b.get('name', '?')} {b.get('version', '')}".strip()
+    except Exception:
+        try:
+            import numpy.distutils.system_info as si  # noqa: PLC0415
+
+            return "mkl" if si.get_info("mkl") else "openblas?"
+        except Exception:
+            return "unknown"
+
+
+def _print_provenance():
+    """Record the CPU BLAS / thread / GPU environment so the comparison is auditable."""
+    print("  [provenance]")
+    print(f"    numpy {np.__version__}  BLAS={_blas_name()}")
+    threads = {k: os.environ.get(k) for k in
+               ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                "SLURM_CPUS_PER_TASK")}
+    print(f"    threads env: {threads}")
+    try:
+        import cupy as cp  # noqa: PLC0415
+
+        ndev = cp.cuda.runtime.getDeviceCount()
+        name = cp.cuda.runtime.getDeviceProperties(0)["name"].decode() if ndev else "n/a"
+        cublas = getattr(cp.cuda, "cublas", None)
+        cublas_ver = cublas.getVersion(cublas.create()) if cublas else "?"
+        print(f"    cupy {cp.__version__}  cudaRT {cp.cuda.runtime.runtimeGetVersion()} "
+              f"cuBLAS {cublas_ver}  devices={ndev} ({name})")
+        print("    GPU scope: SINGLE card (sequential fold; multi-GPU + cuQuantum are future work)")
+    except Exception:
+        print("    cupy: not available (CPU-only run)")
 
 
 def _sync(backend):
@@ -89,12 +127,17 @@ def main():
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--combos", default="cpu:svd,gpu:svd,gpu:rsvd0,gpu:rsvd2",
                     help="comma list of backend:kind (kind = svd|rsvd0|rsvd2)")
+    ap.add_argument("--label", default="", help="tag printed in the header (for scaling sweeps)")
     args = ap.parse_args()
 
     model = GaudinModel(g=args.g, K=args.K)
     combos = [c.strip().split(":") for c in args.combos.split(",") if c.strip()]
-    print(f"GPU compression benchmark (Gaudin): K={args.K}, T={args.T} g^-1, "
-          f"eps={args.eps} g^-1, order={args.order}, xi={args.cutoff:g}, repeats={args.repeats}")
+    nsites = args.order * int(round(args.T / args.eps))
+    tag = f" [{args.label}]" if args.label else ""
+    print(f"GPU compression benchmark (Gaudin){tag}: K={args.K}, T={args.T} g^-1, "
+          f"eps={args.eps} g^-1, order={args.order}, xi={args.cutoff:g}, "
+          f"n_sites={nsites}, repeats={args.repeats}")
+    _print_provenance()
 
     # reference = first cpu:svd combo (or first available)
     ref_pol = None
