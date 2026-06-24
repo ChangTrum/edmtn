@@ -101,6 +101,7 @@ res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 | `backend` | `'auto'`, `'cpu'`, `'gpu'` (`'auto'`) | compute device (`auto` → CPU) |
 | `decomposition` | strategy (`StandardSVD()`) | **compression** (see below) |
 | `canonicalization` | strategy or `None` (`None` → Householder QR) | **canonicalisation** (see below) |
+| `preset` | `'balanced'`, `'robust'`, `None` (`None`) | fills recommended strategies (see below); explicit `decomposition`/`canonicalization` win |
 | `sub_baths` | int or `None` (`None`) | separable bath: fold only the first `L` sub-baths (Fig. 6) |
 
 `solve(...).backend` reports the resolved device.
@@ -134,18 +135,23 @@ CholeskyQR(passes=2)      # BLAS-3 Cholesky-QR2; only wins on CPU at moderate ξ
 Householder QR is conditioning-immune and the measured fastest in every regime except
 CPU-moderate-ξ; keep the default unless you are CPU-bound at `ξ ≳ 1e-6`.
 
-**Recommended presets** (details + when-to-use in [docs/recommended-config.md](docs/recommended-config.md)):
+**Recommended presets** — the easy way is `preset=` (details + when-to-use in
+[docs/recommended-config.md](docs/recommended-config.md)):
 
 ```python
-# balanced (default high-performance, esp. GPU): fastest, accuracy < ξ
+# preset='balanced' -> single-pass rSVD + Householder QR (fastest, accuracy < ξ)
 res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
-            channel=3, backend='gpu', decomposition=RandomizedSVD(n_iter=0))
+            channel=3, backend='gpu', preset='balanced')
 
-# robust (accuracy/stability, exact bonds): Householder QR + cold rSVD
-#   (or decomposition=StandardSVD() for a fully deterministic run)
+# preset='robust'   -> cold rSVD + Householder QR (exact-baseline bonds, ~1e-12)
 res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
-            channel=3, decomposition=RandomizedSVD(n_iter=2))
+            channel=3, preset='robust')
+
+# no preset (default) -> StandardSVD + Householder QR: exact, deterministic.
 ```
+
+`preset` only fills strategies you did not set explicitly (`decomposition=` /
+`canonicalization=` always win), and never overrides `backend`.
 
 ## Performance
 

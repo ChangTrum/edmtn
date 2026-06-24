@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..decomposition.randomized_svd import RandomizedSVD
 from ..decomposition.standard_svd import StandardSVD
 from ..expansion.first_order import FirstOrderExpander
 from ..expansion.second_order import SecondOrderExpander
@@ -61,13 +62,40 @@ class SolverConfig:
     record_rho: bool = False
     decomposition: object | None = None
     canonicalization: object | None = None  # None -> Householder QR; e.g. CholeskyQR()
+    preset: str | None = None  # None | 'balanced' | 'robust' (see docs/recommended-config.md)
     sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
     backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
     precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
 
+    def __post_init__(self):
+        # Resolve a strategy preset, but never override explicitly-passed strategies.
+        # Default (preset=None): StandardSVD + Householder (exact, deterministic).
+        if self.preset is None:
+            return
+        if self.preset not in _PRESETS:
+            raise ValueError(
+                f"unknown preset {self.preset!r}; choose from {sorted(_PRESETS)} or None"
+            )
+        spec = _PRESETS[self.preset]
+        if self.decomposition is None and "decomposition" in spec:
+            self.decomposition = spec["decomposition"]()
+        if self.canonicalization is None and "canonicalization" in spec:
+            self.canonicalization = spec["canonicalization"]()
+
     @property
     def n_steps(self) -> int:
         return int(round(self.T / self.eps))
+
+
+# Recommended strategy presets (docs/recommended-config.md).  Canonicalisation is
+# Householder QR in both (the measured default everywhere), so only the
+# decomposition differs; factories so each solver gets a fresh instance.
+_PRESETS: dict = {
+    # balanced: fastest, GPU-friendly, accuracy < cutoff
+    "balanced": {"decomposition": lambda: RandomizedSVD(n_iter=0)},
+    # robust: exact-baseline bonds, ~1e-12 accuracy (cold rSVD)
+    "robust": {"decomposition": lambda: RandomizedSVD(n_iter=2)},
+}
 
 
 def _make_expander(order: int):
