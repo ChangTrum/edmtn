@@ -52,8 +52,9 @@ medium SVD/QR calls, latency-bound.
 
 ## The large-`D` memory bottleneck
 
-The GPU would only overtake once `D_c` is large (the paper uses 400), making each
-SVD compute-bound.  But at large `D_c` the *current* compression strategy
+The GPU would only overtake once `D_c` is large (the paper uses 400 — a chosen cap,
+**not** a physical ceiling: the Gaudin bond grows without bound with evolution time,
+see `gpu-scaling-benchmark.md` item 2), making each SVD compute-bound.  But at large `D_c` the *current* compression strategy
 (`StandardSVD`, "form the full product, then truncate") hits a memory wall first:
 applying a sub-bath MPO multiplies every internal bond by the lateral factor
 `D_a = 4`, so the **uncompressed intermediate MPS has bonds up to `4 · D_c`**

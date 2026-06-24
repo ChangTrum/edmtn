@@ -123,6 +123,15 @@ proposal predicted exponent 1: `Δḡ/ḡ_L ~ x/2`). The high `R²` means the
 residual magnitude is **predictable from `x`** before a fold runs — the basis for
 adaptive routing.
 
+> **`g`-mode caveat.** `L*` and this scaling law are *parameterised* by the coupling
+> ratio `x = g²_{L+1}/ḡ²_L`. Whether the fold-index saturation they describe is
+> **caused** by the hard-coded **linearly-decreasing `g`** (later sub-baths weaker)
+> or is **intrinsic to Gaudin** for any `g` profile is **unconfirmed** — the `g`-mode
+> explanation is the current leaning, to be settled by testing other `g` profiles.
+> Either way the bond still grows without bound along **evolution time** (§10,
+> `gpu-scaling-benchmark.md` item 2), and this is moot for the final recommendation
+> since §13 demotes the routing this fed.
+
 > Note on `r_eff`. The *rank* needed to reach cutoff precision is **not** small
 > just because `η` is small: even when `η ~ 1e-3` the residual spectrum has a
 > slowly-decaying tail, so `r_eff` (#singular values of `M^⊥` above
@@ -283,6 +292,23 @@ PYTHONPATH=src python examples/cs_recovery_poc.py                  # §7 CS vali
 - **Scale.** Validation ran at `K = 24–28`, `T = 3–4 g⁻¹` on CPU. The paper uses
   `K = 49`, `T = 15 g⁻¹`, `D_c = 400`. Qualitative findings are robust; re-fit
   `L*` and the scaling exponent at production scale before hard-coding thresholds.
+- **`max_bond = 400` was never binding here, so these results are unaffected by it.**
+  At `T = 3–4` the natural bond is 95 (ξ=1e-6) / ~191 (ξ=1e-8) / ~371 (ξ=1e-10) —
+  all below 400 — so the cap (a resource-era convenience, *not* a physical limit)
+  never truncated. The only place it bound was the capacity sweep at long `T`
+  (corrected, `docs/gpu-scaling-benchmark.md` item 2) and the ξ=1e-12 points (flagged).
+- **Two orthogonal bond-growth axes — do not conflate.** (i) Along the **fold index
+  `L`** at fixed `T`, the bond *saturates* (`L*`, the §4/§13 plateaus). **Why it
+  saturates is unconfirmed:** plausibly the **linearly-decreasing `g`** (weaker late
+  sub-baths) drives it — the current leaning — but it could instead be intrinsic to
+  Gaudin regardless of `g`; not yet verified (the §4 scaling law is *parameterised* by
+  the coupling ratio `x = g²_{L+1}/ḡ²_L`, but whether the saturation needs `g`-decay is
+  the open question — test other `g` profiles). (ii) Along **evolution time `T`**, the
+  Gaudin bond **grows without bound** (time-independent Hamiltonian → infinite memory
+  time) — confirmed; this makes capacity the hard wall (`gpu-scaling-benchmark.md`
+  item 2). The findings in this document live at fixed `T = 3–4` and concern
+  compression/canonicalisation accuracy at a *given* bond, so they are independent of
+  which axis grows the bond either way.
 - **Model.** Only the Gaudin separable bath was studied. The `r_eff` bimodality
   that defeats CS is a property of this bath's residual spectrum; a different bath
   (genuinely low-rank, non-negligible residual) could revive the CS tier.
@@ -608,11 +634,22 @@ rsvd0: 16 55 96 135 142 161 173 176 177 178 179 181 ... 187       plateau at L=1
 ```
 
 Three conclusions:
-1. **Growth still plateaus**, but the plateau location is cutoff-dependent, not a
-   fixed `L≈15`. At ξ=1e-6 it saturates at L=9 (one fold *earlier* than full SVD)
-   at the same ceiling (95). At ξ=1e-8 the plateau is *pushed out* to L=17 and sits
-   *higher* (187 vs 175). (The earlier `L*≈15` from §4 is the stricter per-bond
-   `dD=0 / n_new=0` criterion, not the whole-chain `Dmax` saturation point.)
+1. **Growth still plateaus** *along the fold index `L` at fixed `T`*, with a
+   cutoff-dependent location (not a fixed `L≈15`). At ξ=1e-6 it saturates at L=9
+   (one fold *earlier* than full SVD) at the same ceiling (95); at ξ=1e-8 the
+   plateau is *pushed out* to L=17 and sits *higher* (187 vs 175). (The earlier
+   `L*≈15` from §4 is the stricter per-bond `dD=0 / n_new=0` criterion, not the
+   whole-chain `Dmax` saturation point.)
+   > **Axis caveat (important).** This plateau is along the **fold index `L`**
+   > (number of sub-baths folded) at **fixed evolution time `T`** — *not* a bound on
+   > the bond itself. **Its cause is unconfirmed:** it may be driven by the
+   > hard-coded **linearly-decreasing coupling** `g` (later sub-baths weaker, adding
+   > no new bond) or it may be intrinsic to the Gaudin model irrespective of the `g`
+   > profile — the `g`-mode hypothesis is the current leaning but is **not verified**
+   > (test other `g` profiles to decide; future work). Independently of that, along
+   > the **evolution-time** axis the Gaudin bond **grows without bound** (its
+   > Hamiltonian is time-independent → infinite memory time;
+   > `docs/gpu-scaling-benchmark.md` item 2) — this part *is* confirmed.
 2. **Single-pass is never *better* (smaller) than full SVD — only equal or larger.**
    Structurally: the resolution guard forbids dropping a true direction (lower
    bound = exact rank), while imperfect near-threshold resolution can leave a few
