@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import DecompositionResult, DecompositionStrategy, truncation_rank
+from .randomized_svd import RandomizedSVD
 from .standard_svd import StandardSVD
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "DecompositionResult",
     "truncation_rank",
     "StandardSVD",
+    "RandomizedSVD",
 ]
