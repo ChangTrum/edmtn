@@ -47,6 +47,8 @@ class SolverConfig:
         Store ``rho(t)`` at every step (needed for custom observables).
     decomposition : DecompositionStrategy, optional
         Compression strategy (default :class:`StandardSVD`).
+    canonicalization : CanonicalizationStrategy, optional
+        Canonicalisation strategy (default Householder QR; e.g. ``CholeskyQR()``).
     """
 
     eps: float
@@ -58,6 +60,7 @@ class SolverConfig:
     expansion_order: int = 1
     record_rho: bool = False
     decomposition: object | None = None
+    canonicalization: object | None = None  # None -> Householder QR; e.g. CholeskyQR()
     sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
     backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
     precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
@@ -108,6 +111,7 @@ def _build_gaussian(model, config: SolverConfig):
     evolution = SingleBathEvolution(
         expander=_make_expander(config.expansion_order),
         decomposition=decomposition,
+        canonicalization=config.canonicalization,
     )
     return kernel_engine, evolution
 
@@ -118,6 +122,7 @@ def _build_separable(model, config: SolverConfig):
     evolution = SeparableBathEvolution(
         expander=_make_expander(config.expansion_order),
         decomposition=decomposition,
+        canonicalization=config.canonicalization,
     )
     return kernel_engine, evolution
 

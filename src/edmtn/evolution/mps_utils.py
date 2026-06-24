@@ -193,8 +193,15 @@ def apply_step(mps, kernel_sites, sfamily, d, rho0_vec):
 # compression (canonicalisation + truncation sweep)
 # --------------------------------------------------------------------------
 
-def left_canonicalize(mps):
-    """Left-canonicalise sites ``0 .. n-2`` via QR, leaving site ``n-1`` as centre."""
+def left_canonicalize(mps, canon=None):
+    """Left-canonicalise sites ``0 .. n-2``, leaving site ``n-1`` as centre.
+
+    ``canon`` selects a :class:`~edmtn.evolution.canonicalize.CanonicalizationStrategy`
+    (e.g. ``CholeskyQR``); ``None`` (default) is the historical Householder QR sweep,
+    kept byte-for-byte.
+    """
+    if canon is not None:
+        return canon.left_canonicalize(mps)
     xp = _xp(mps.tensors[0])
     n = mps.num_sites
     for p in range(n - 1):
@@ -246,9 +253,13 @@ def truncate(mps, strategy=None, *, max_bond=None, cutoff=0.0,
     return mps, infos
 
 
-def compress(mps, strategy=None, **trunc):
-    """Canonicalise then truncate in place; returns ``(mps, info_per_bond)``."""
-    left_canonicalize(mps)
+def compress(mps, strategy=None, *, canon=None, **trunc):
+    """Canonicalise then truncate in place; returns ``(mps, info_per_bond)``.
+
+    ``canon`` chooses the canonicalisation strategy (default Householder QR);
+    ``strategy`` chooses the truncation/decomposition strategy.
+    """
+    left_canonicalize(mps, canon=canon)
     return truncate(mps, strategy=strategy, **trunc)
 
 

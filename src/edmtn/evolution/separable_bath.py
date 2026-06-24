@@ -78,11 +78,12 @@ class SeparableBathEvolution:
         Compression strategy (default :class:`StandardSVD`).
     """
 
-    def __init__(self, expander=None, decomposition=None):
+    def __init__(self, expander=None, decomposition=None, canonicalization=None):
         self.expander = expander if expander is not None else SecondOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(f"unsupported expansion order {self.expander.order}")
         self.decomposition = decomposition if decomposition is not None else StandardSVD()
+        self.canonicalization = canonicalization  # None -> Householder QR
 
     def run(
         self,
@@ -169,6 +170,7 @@ class SeparableBathEvolution:
                 mps, infos = mps_utils.compress(
                     mps,
                     strategy=self.decomposition,
+                    canon=self.canonicalization,
                     max_bond=max_bond,
                     cutoff=cutoff,
                     cutoff_mode=cutoff_mode,

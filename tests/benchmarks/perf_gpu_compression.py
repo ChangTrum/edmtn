@@ -24,6 +24,7 @@ import numpy as np
 
 from edmtn.decomposition import RandomizedSVD, StandardSVD
 from edmtn.driver.solver import EDMSolver
+from edmtn.evolution import CholeskyQR
 from edmtn.models import GaudinModel
 
 
@@ -89,8 +90,18 @@ def _make_decomp(kind):
     raise ValueError(f"unknown decomposition kind {kind!r}")
 
 
-def run_combo(model, *, T, eps, order, cutoff, max_bond, backend, kind, repeats):
-    """One (backend, decomposition) combo; returns dict or None if backend unavailable."""
+def _make_canon(kind):
+    if kind in ("householder", "hh", "qr"):
+        return lambda: None                       # None -> Householder QR (default)
+    if kind in ("cholqr2", "cqr2"):
+        return lambda: CholeskyQR(passes=2)
+    if kind in ("cholqr", "cholqr1", "cqr1"):
+        return lambda: CholeskyQR(passes=1)
+    raise ValueError(f"unknown canon kind {kind!r}")
+
+
+def run_combo(model, *, T, eps, order, cutoff, max_bond, backend, kind, canon, repeats):
+    """One (backend, decomposition, canon) combo; None if backend unavailable."""
     if backend in ("gpu", "cupy"):
         try:
             import cupy as cp  # noqa: PLC0415
@@ -99,13 +110,15 @@ def run_combo(model, *, T, eps, order, cutoff, max_bond, backend, kind, repeats)
                 return None
         except Exception:
             return None
-    make = _make_decomp(kind)
+    make_d = _make_decomp(kind)
+    make_c = _make_canon(canon)
     walls, res = [], None
     for r in range(repeats + 1):              # r=0 is an untimed warm-up
         t0 = time.perf_counter()
         res = EDMSolver.from_model(
             model, T=T, eps=eps, expansion_order=order, cutoff=cutoff,
-            max_bond=max_bond, backend=backend, decomposition=make(),
+            max_bond=max_bond, backend=backend, decomposition=make_d(),
+            canonicalization=make_c(),
         ).solve(channel=3)
         _sync(backend)
         dt = time.perf_counter() - t0
@@ -127,11 +140,15 @@ def main():
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--combos", default="cpu:svd,gpu:svd,gpu:rsvd0,gpu:rsvd2",
                     help="comma list of backend:kind (kind = svd|rsvd0|rsvd2)")
+    ap.add_argument("--canon", default="householder",
+                    help="comma list of canon (householder|cholqr2|cholqr1); each is "
+                         "crossed with every combo")
     ap.add_argument("--label", default="", help="tag printed in the header (for scaling sweeps)")
     args = ap.parse_args()
 
     model = GaudinModel(g=args.g, K=args.K)
     combos = [c.strip().split(":") for c in args.combos.split(",") if c.strip()]
+    canons = [c.strip() for c in args.canon.split(",") if c.strip()]
     nsites = args.order * int(round(args.T / args.eps))
     tag = f" [{args.label}]" if args.label else ""
     print(f"GPU compression benchmark (Gaudin){tag}: K={args.K}, T={args.T} g^-1, "
@@ -139,31 +156,36 @@ def main():
           f"n_sites={nsites}, repeats={args.repeats}")
     _print_provenance()
 
-    # reference = first cpu:svd combo (or first available)
+    # reference = first cpu:svd + householder combo (or first available)
     ref_pol = None
     rows = []
-    for backend, kind in combos:
-        r = run_combo(model, T=args.T, eps=args.eps, order=args.order, cutoff=args.cutoff,
-                      max_bond=args.max_bond, backend=backend, kind=kind, repeats=args.repeats)
-        if r is None:
-            print(f"  {backend:>4}:{kind:<6}  -- backend unavailable, skipped")
-            continue
-        if ref_pol is None and backend in ("cpu", "numpy") and kind == "svd":
-            ref_pol = r["pol"]
-        rows.append((backend, kind, r))
+    for canon in canons:
+        for backend, kind in combos:
+            r = run_combo(model, T=args.T, eps=args.eps, order=args.order, cutoff=args.cutoff,
+                          max_bond=args.max_bond, backend=backend, kind=kind, canon=canon,
+                          repeats=args.repeats)
+            if r is None:
+                print(f"  {backend}:{kind}/{canon}  -- backend unavailable, skipped")
+                continue
+            if (ref_pol is None and backend in ("cpu", "numpy") and kind == "svd"
+                    and canon == "householder"):
+                ref_pol = r["pol"]
+            rows.append((backend, kind, canon, r))
 
     if ref_pol is None and rows:
-        ref_pol = rows[0][2]["pol"]            # fall back to first available combo
+        ref_pol = rows[0][3]["pol"]            # fall back to first available combo
 
-    cpu_svd_wall = next((r["wall"] for b, k, r in rows if b in ("cpu", "numpy") and k == "svd"), None)
+    cpu_svd_wall = next((r["wall"] for b, k, c, r in rows
+                         if b in ("cpu", "numpy") and k == "svd"), None)
 
-    print(f"\n  {'combo':>12} | {'wall(s)':>8} {'vs cpu-svd':>10} | {'max|dSz|':>9} | {'Dmax':>5}")
-    print("  " + "-" * 56)
-    for backend, kind, r in rows:
+    print(f"\n  {'combo/canon':>22} | {'wall(s)':>8} {'vs cpu-svd':>10} | {'max|dSz|':>9} | {'Dmax':>5}")
+    print("  " + "-" * 66)
+    for backend, kind, canon, r in rows:
         n = min(len(r["pol"]), len(ref_pol))
         err = float(np.max(np.abs(np.asarray(r["pol"][:n]) - np.asarray(ref_pol[:n]))))
         spd = f"{cpu_svd_wall / r['wall']:.2f}x" if cpu_svd_wall else "  --"
-        print(f"  {backend + ':' + kind:>12} | {r['wall']:8.2f} {spd:>10} | {err:9.2e} | {r['dmax']:5d}")
+        label = f"{backend}:{kind}/{canon}"
+        print(f"  {label:>22} | {r['wall']:8.2f} {spd:>10} | {err:9.2e} | {r['dmax']:5d}")
 
     print("\n  (speedup vs CPU full-SVD pipeline; accuracy vs CPU full-SVD reference)")
 

@@ -7,6 +7,7 @@ system superoperator, then recompresses the bonds.
 
 from __future__ import annotations
 
+from .canonicalize import CanonicalizationStrategy, CholeskyQR, HouseholderQR
 from .mps_utils import (
     EDMMPS,
     apply_step,
@@ -25,6 +26,9 @@ __all__ = [
     "EvolutionResult",
     "SeparableBathEvolution",
     "SeparableEvolutionResult",
+    "CanonicalizationStrategy",
+    "HouseholderQR",
+    "CholeskyQR",
     "apply_step",
     "compress",
     "left_canonicalize",
