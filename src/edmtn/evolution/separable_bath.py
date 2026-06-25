@@ -162,6 +162,14 @@ class SeparableBathEvolution:
         # rho_0 = S^Phi rho(0): pure system evolution MPS (bond dim d**2)
         mps = self._build_system_mps(model, eps, n_steps, order, d, d_phys, rho0_vec, convert)
 
+        # 'quimb' carries the EDM as a quimb TensorNetwork through the fold loop
+        # (the structural re-platform); 'native' keeps the bespoke EDMMPS path.
+        use_quimb = self.compression == "quimb"
+        if use_quimb:
+            from .quimb_edm import QuimbEDM  # noqa: PLC0415
+
+            mps = QuimbEDM.from_edmmps(mps)
+
         result = SeparableEvolutionResult(mps=None, n_sub_baths=n_fold)
         if record_rho:
             result.density_matrices = []
@@ -170,24 +178,34 @@ class SeparableBathEvolution:
             mpo_sites = [
                 convert(s) for s in kernel_engine.for_sub_bath(k).get_kernel_mpo(n_sites).site_tensors
             ]
-            mps = self._apply_sub_bath(mps, mpo_sites, d, d_phys, rho0_vec)
             err = 0.0
-            if compress and mps.num_sites > 1:
-                mps, infos = mps_utils.compress(
-                    mps,
-                    strategy=self.decomposition,
-                    canon=self.canonicalization,
-                    engine=self.compression,
-                    compress_cutoff=self.compress_cutoff,
-                    compress_cutoff_mode=self.compress_cutoff_mode,
-                    compress_method=self.compress_method,
-                    max_bond=max_bond,
-                    cutoff=cutoff,
-                    cutoff_mode=cutoff_mode,
-                    ref_index=ref_index,
+            if use_quimb:
+                # exact fold (compress=False) is reproduced by a zero cutoff
+                mps = mps.fold(
+                    mpo_sites,
+                    cutoff=self.compress_cutoff if compress else 0.0,
+                    cutoff_mode=self.compress_cutoff_mode,
+                    method=self.compress_method,
+                    max_bond=max_bond if compress else None,
                 )
-                if infos:
-                    err = max(info["error"] for info in infos)
+            else:
+                mps = self._apply_sub_bath(mps, mpo_sites, d, d_phys, rho0_vec)
+                if compress and mps.num_sites > 1:
+                    mps, infos = mps_utils.compress(
+                        mps,
+                        strategy=self.decomposition,
+                        canon=self.canonicalization,
+                        engine=self.compression,
+                        compress_cutoff=self.compress_cutoff,
+                        compress_cutoff_mode=self.compress_cutoff_mode,
+                        compress_method=self.compress_method,
+                        max_bond=max_bond,
+                        cutoff=cutoff,
+                        cutoff_mode=cutoff_mode,
+                        ref_index=ref_index,
+                    )
+                    if infos:
+                        err = max(info["error"] for info in infos)
 
             # release the previous sub-bath's GPU intermediates (no-op on CPU)
             if memory is not None:
@@ -201,7 +219,9 @@ class SeparableBathEvolution:
                 if record_rho:
                     result.density_matrices.append(mps.reduced_density_matrix())
 
-        result.mps = mps
+        # hand back a plain EDMMPS so observable extraction (which reads per-site
+        # tensors) is identical regardless of the carried container
+        result.mps = mps.to_edmmps() if use_quimb else mps
         return result
 
     # -- construction ------------------------------------------------------
