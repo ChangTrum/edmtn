@@ -62,6 +62,10 @@ class SolverConfig:
     record_rho: bool = False
     decomposition: object | None = None
     canonicalization: object | None = None  # None -> Householder QR; e.g. CholeskyQR()
+    compression: str = "native"  # 'native' | 'quimb' (quimb: tensor_network_1d_compress, ecosystem path)
+    compress_cutoff: float = 1e-12        # quimb path cutoff
+    compress_cutoff_mode: str = "rsum2"   # quimb path cutoff mode
+    compress_method: str = "zipup"        # quimb path 1D-compress method
     preset: str | None = None  # None | 'balanced' | 'robust' (see docs/recommended-config.md)
     sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
     backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
@@ -140,6 +144,10 @@ def _build_gaussian(model, config: SolverConfig):
         expander=_make_expander(config.expansion_order),
         decomposition=decomposition,
         canonicalization=config.canonicalization,
+        compression=config.compression,
+        compress_cutoff=config.compress_cutoff,
+        compress_cutoff_mode=config.compress_cutoff_mode,
+        compress_method=config.compress_method,
     )
     return kernel_engine, evolution
 
@@ -151,6 +159,10 @@ def _build_separable(model, config: SolverConfig):
         expander=_make_expander(config.expansion_order),
         decomposition=decomposition,
         canonicalization=config.canonicalization,
+        compression=config.compression,
+        compress_cutoff=config.compress_cutoff,
+        compress_cutoff_mode=config.compress_cutoff_mode,
+        compress_method=config.compress_method,
     )
     return kernel_engine, evolution
 

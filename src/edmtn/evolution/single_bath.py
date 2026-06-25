@@ -68,7 +68,9 @@ class SingleBathEvolution:
         Compression strategy (default :class:`StandardSVD`).
     """
 
-    def __init__(self, expander=None, decomposition=None, canonicalization=None):
+    def __init__(self, expander=None, decomposition=None, canonicalization=None,
+                 compression="native", compress_cutoff=1e-12,
+                 compress_cutoff_mode="rsum2", compress_method="zipup"):
         self.expander = expander if expander is not None else FirstOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(
@@ -76,6 +78,10 @@ class SingleBathEvolution:
             )
         self.decomposition = decomposition if decomposition is not None else StandardSVD()
         self.canonicalization = canonicalization  # None -> Householder QR
+        self.compression = compression  # 'native' | 'quimb'
+        self.compress_cutoff = compress_cutoff
+        self.compress_cutoff_mode = compress_cutoff_mode
+        self.compress_method = compress_method
 
     def run(
         self,
@@ -152,6 +158,10 @@ class SingleBathEvolution:
                         mps,
                         strategy=self.decomposition,
                         canon=self.canonicalization,
+                        engine=self.compression,
+                        compress_cutoff=self.compress_cutoff,
+                        compress_cutoff_mode=self.compress_cutoff_mode,
+                        compress_method=self.compress_method,
                         max_bond=max_bond,
                         cutoff=cutoff,
                         cutoff_mode=cutoff_mode,
