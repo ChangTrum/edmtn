@@ -14,7 +14,7 @@ import pytest
 from edmtn.evolution.mps_utils import EDMMPS
 from edmtn.evolution.quimb_edm import QuimbEDM
 from edmtn.driver.solver import solve
-from edmtn.models import GaudinModel
+from edmtn.models import GaudinModel, SpinBosonModel
 
 
 def _random_edmmps(n, d, d_phys, chi, rng):
@@ -81,6 +81,21 @@ def test_container_solver_matches_physics(mode, cutoff):
     ref = solve(model, **common)
     got = solve(model, compression="quimb", compress_cutoff_mode=mode,
                 compress_cutoff=cutoff, **common)
+    n = min(len(ref.polarization), len(got.polarization))
+    err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
+                              - np.asarray(got.polarization[:n]))))
+    assert err < 1e-4
+
+
+@pytest.mark.parametrize("order", [1, 2])
+def test_container_single_bath_matches_physics(order):
+    """Single-bath (spin-boson) <S_z(t)> via the quimb container (step + compress)
+    matches the native solve -- the chain-growing engine, not the separable fold."""
+    model = SpinBosonModel(J0=0.6, omega_c=5.0, mu=1.0)
+    common = dict(T=2.0, eps=0.1, expansion_order=order, cutoff=1e-6, channel=1)
+    ref = solve(model, **common)
+    got = solve(model, compression="quimb", compress_cutoff_mode="rsum2",
+                compress_cutoff=1e-13, **common)
     n = min(len(ref.polarization), len(got.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
                               - np.asarray(got.polarization[:n]))))

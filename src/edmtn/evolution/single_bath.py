@@ -143,7 +143,15 @@ class SingleBathEvolution:
         if record_rho:
             result.density_matrices = []
 
-        mps = None
+        # 'quimb' carries the EDM as a quimb TensorNetwork through the step loop
+        # (the structural re-platform); 'native' keeps the bespoke EDMMPS path.
+        use_quimb = self.compression == "quimb"
+        if use_quimb:
+            from .quimb_edm import QuimbEDM  # noqa: PLC0415
+
+            mps = QuimbEDM.empty(rho0_vec, d, kernel_engine.d_phys)
+        else:
+            mps = None
         g = 0  # global sub-step index (1-based)
         for n in range(1, n_steps + 1):
             t_phys = n * eps
@@ -152,6 +160,17 @@ class SingleBathEvolution:
             for sub in range(order):  # S_1 then S_2 for order 2; single for order 1
                 g += 1
                 ksites = [convert(k) for k in kernel_engine.get_kernel_mpo(g).site_tensors]
+                if use_quimb:
+                    mps = mps.step(ksites, families[sub], d)
+                    if compress and mps.num_sites > 1:
+                        # exact step (compress=False) is reproduced by a zero cutoff
+                        mps = mps.compress(
+                            cutoff=self.compress_cutoff if compress else 0.0,
+                            cutoff_mode=self.compress_cutoff_mode,
+                            method=self.compress_method,
+                            max_bond=max_bond if compress else None,
+                        )
+                    continue
                 mps = mps_utils.apply_step(mps, ksites, families[sub], d, rho0_vec)
                 if compress and mps.num_sites > 1:
                     mps, infos = mps_utils.compress(
@@ -177,5 +196,7 @@ class SingleBathEvolution:
             if record_rho:
                 result.density_matrices.append(mps.reduced_density_matrix())
 
-        result.mps = mps
+        # hand back a plain EDMMPS so observable extraction (which reads per-site
+        # tensors) is identical regardless of the carried container
+        result.mps = mps.to_edmmps() if use_quimb else mps
         return result

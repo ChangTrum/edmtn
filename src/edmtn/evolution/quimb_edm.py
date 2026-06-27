@@ -16,12 +16,17 @@ Representation (the validated Phase-0.0 mapping):
 * the operator-valued boundaries -- the dangling ``d**2`` output leg ``OUT`` and
   the ``rho0`` contraction leg ``RHO0`` -- are ordinary dangling indices.
 
-The fold reproduces the **two-stage** path (the per-site contraction that
-``_apply_sub_bath`` does with ``tensordot``, then a quimb compression) -- *not* a
-fused single-pass apply, which the Phase-0 ledger showed keeps ~2x the bond and is
-slower (``docs/phase0-replatform-decisions.md``).  So per-site the kernel MPO is
-contracted into the EDM exactly (forming the fused ``a*chi`` bond), the parallel
-``(v, a)`` bonds are fused, and only then is the chain compressed (zipup, a
+Both evolution engines are covered: the separable bath grows every bond by a
+sub-bath MPO fold (:meth:`QuimbEDM.fold`), the single (Gaussian) bath grows the
+chain by one new time-site per step (:meth:`QuimbEDM.step`); both then share
+:meth:`QuimbEDM.compress`.
+
+The fold/step reproduce the **two-stage** path (the per-site contraction that
+``_apply_sub_bath`` / ``apply_step`` do with ``tensordot``, then a quimb
+compression) -- *not* a fused single-pass apply, which the Phase-0 ledger showed
+keeps ~2x the bond and is slower (``docs/phase0-replatform-decisions.md``).  So the
+kernel is contracted into the EDM exactly (forming the fused ``a*chi`` bond),
+parallel bonds are fused, and only then is the chain compressed (zipup, a
 quimb-native ``rsum2`` cutoff).  This keeps the observable ``<S_z(t)>`` identical to
 the native path while removing the custom container.
 """
@@ -64,6 +69,13 @@ class QuimbEDM:
             ts.append(qtn.Tensor(mps.tensors[p], inds=(f"k{p}", left, right), tags={f"I{p}"}))
         return cls(qtn.TensorNetwork(ts), n, mps.d, mps.d_phys, mps.rho0_vec,
                    meta=getattr(mps, "meta", None))
+
+    @classmethod
+    def empty(cls, rho0_vec, d, d_phys) -> "QuimbEDM":
+        """An empty EDM (no sites yet) -- the single-bath start before step 1."""
+        import quimb.tensor as qtn  # noqa: PLC0415
+
+        return cls(qtn.TensorNetwork([]), 0, d, d_phys, rho0_vec)
 
     def to_edmmps(self) -> EDMMPS:
         """Extract back into an :class:`EDMMPS` (per-site ``(phi, chi_l, chi_r)``)."""
@@ -112,7 +124,41 @@ class QuimbEDM:
         vec = net.contract(output_inds=("OUT",)).data
         return np.asarray(vec).reshape(self.d, self.d)
 
-    # -- fold (MPO x MPS contraction + compression) ------------------------
+    # -- compression -------------------------------------------------------
+
+    def compress(self, *, cutoff, cutoff_mode, method, max_bond):
+        """Canonicalise + truncate the chain via quimb (cotengra/autoray)."""
+        import quimb.tensor as qtn  # noqa: PLC0415
+
+        if self.n <= 1:
+            return self
+        from ..backend.quimb_linalg import apply_quimb_cupy_compat  # noqa: PLC0415
+
+        apply_quimb_cupy_compat()  # make quimb/autoray safe on CuPy-backed tensors
+        cq = qtn.tensor_network_1d_compress(
+            self.tn, max_bond=max_bond, cutoff=cutoff, method=method,
+            site_tags=[f"I{p}" for p in range(self.n)], permute_arrays=False,
+            cutoff_mode=cutoff_mode, optimize="auto")
+        return QuimbEDM(cq, self.n, self.d, self.d_phys, self.rho0_vec, meta=self.meta)
+
+    # -- single-bath step (one new time-site, Eq. 8) -----------------------
+
+    def step(self, kernel_sites, sfamily, d):
+        """Advance the EDM by one time-step (single bath), growing the chain by one
+        site (uncompressed; the caller then :meth:`compress`).
+
+        The per-site fold (the new superoperator into the newest site, the kernel
+        sites into the existing ones) is the exact array contraction of
+        :func:`~edmtn.evolution.mps_utils.apply_step`; carried back into a quimb TN
+        so the state stays in the ecosystem container.
+        """
+        from .mps_utils import apply_step  # noqa: PLC0415
+
+        prev = self.to_edmmps() if self.n > 0 else None
+        enlarged = apply_step(prev, kernel_sites, sfamily, d, self.rho0_vec)
+        return QuimbEDM.from_edmmps(enlarged)
+
+    # -- separable fold (MPO x MPS contraction + compression) --------------
 
     def fold(self, mpo_sites, *, cutoff, cutoff_mode, method, max_bond):
         """Fold one sub-bath's combined-kernel MPO into the EDM, then compress.
@@ -145,8 +191,5 @@ class QuimbEDM:
             folded.append(site)
         tn = qtn.TensorNetwork(folded)
         tn.fuse_multibonds(inplace=True)            # (v{p}, a{p}) -> single fused bond
-        cq = qtn.tensor_network_1d_compress(
-            tn, max_bond=max_bond, cutoff=cutoff, method=method,
-            site_tags=[f"I{p}" for p in range(n)], permute_arrays=False,
-            cutoff_mode=cutoff_mode, optimize="auto")
-        return QuimbEDM(cq, n, self.d, self.d_phys, self.rho0_vec, meta=self.meta)
+        return QuimbEDM(tn, n, self.d, self.d_phys, self.rho0_vec, meta=self.meta).compress(
+            cutoff=cutoff, cutoff_mode=cutoff_mode, method=method, max_bond=max_bond)
