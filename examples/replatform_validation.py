@@ -66,13 +66,14 @@ class Report:
     def add(self, name, passed, detail):
         self.rows.append((name, passed, detail))
         self.ok = self.ok and passed
+        # echo immediately so long (cluster) runs show progress in the .out file
+        print(f"  [{'PASS' if passed else 'FAIL'}] {name:<42} {detail}", flush=True)
 
     def show(self):
+        n_fail = sum(1 for _, p, _ in self.rows if not p)
         print("\n" + "=" * 78)
-        for name, passed, detail in self.rows:
-            print(f"  [{'PASS' if passed else 'FAIL'}] {name:<42} {detail}")
-        print("=" * 78)
-        print(f"  OVERALL: {'ALL PASS' if self.ok else 'FAILURES PRESENT'}")
+        print(f"  OVERALL: {'ALL PASS' if self.ok else f'{n_fail} FAILURE(S)'} "
+              f"({len(self.rows)} checks)")
         return self.ok
 
 
