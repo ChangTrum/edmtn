@@ -80,7 +80,8 @@ class SeparableBathEvolution:
 
     def __init__(self, expander=None, decomposition=None, canonicalization=None,
                  compression="native", compress_cutoff=1e-12,
-                 compress_cutoff_mode="rel", compress_method="zipup"):
+                 compress_cutoff_mode="rel", compress_method="zipup",
+                 compress_decomp="exact", compress_decomp_q=2, compress_canon="quimb"):
         self.expander = expander if expander is not None else SecondOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(f"unsupported expansion order {self.expander.order}")
@@ -90,6 +91,9 @@ class SeparableBathEvolution:
         self.compress_cutoff = compress_cutoff
         self.compress_cutoff_mode = compress_cutoff_mode
         self.compress_method = compress_method
+        self.compress_decomp = compress_decomp        # 'exact' | 'rsvd' (quimb path)
+        self.compress_decomp_q = compress_decomp_q     # rsvd power iterations
+        self.compress_canon = compress_canon           # 'quimb' | 'householder' | 'cholqr'
 
     def run(
         self,
@@ -187,6 +191,9 @@ class SeparableBathEvolution:
                     cutoff_mode=self.compress_cutoff_mode,
                     method=self.compress_method,
                     max_bond=max_bond if compress else None,
+                    decomp=self.compress_decomp,
+                    decomp_q=self.compress_decomp_q,
+                    canon=self.compress_canon,
                 )
             else:
                 mps = self._apply_sub_bath(mps, mpo_sites, d, d_phys, rho0_vec)

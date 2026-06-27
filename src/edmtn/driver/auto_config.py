@@ -66,6 +66,9 @@ class SolverConfig:
     compress_cutoff: float = 1e-12        # quimb path cutoff
     compress_cutoff_mode: str = "rel"     # quimb path cutoff mode (rel: faithful to rel_ref; see docs)
     compress_method: str = "zipup"        # quimb path 1D-compress method
+    compress_decomp: str = "exact"        # quimb path per-bond decomposition: 'exact' | 'rsvd'
+    compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass)
+    compress_canon: str = "quimb"         # quimb path canonicalisation: 'quimb' | 'householder' | 'cholqr'
     preset: str | None = None  # None | 'balanced' | 'robust' (see docs/recommended-config.md)
     sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
     backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
@@ -148,6 +151,9 @@ def _build_gaussian(model, config: SolverConfig):
         compress_cutoff=config.compress_cutoff,
         compress_cutoff_mode=config.compress_cutoff_mode,
         compress_method=config.compress_method,
+        compress_decomp=config.compress_decomp,
+        compress_decomp_q=config.compress_decomp_q,
+        compress_canon=config.compress_canon,
     )
     return kernel_engine, evolution
 
@@ -163,6 +169,9 @@ def _build_separable(model, config: SolverConfig):
         compress_cutoff=config.compress_cutoff,
         compress_cutoff_mode=config.compress_cutoff_mode,
         compress_method=config.compress_method,
+        compress_decomp=config.compress_decomp,
+        compress_decomp_q=config.compress_decomp_q,
+        compress_canon=config.compress_canon,
     )
     return kernel_engine, evolution
 

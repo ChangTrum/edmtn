@@ -126,19 +126,29 @@ class QuimbEDM:
 
     # -- compression -------------------------------------------------------
 
-    def compress(self, *, cutoff, cutoff_mode, method, max_bond):
-        """Canonicalise + truncate the chain via quimb (cotengra/autoray)."""
+    def compress(self, *, cutoff, cutoff_mode, method, max_bond,
+                 decomp="exact", decomp_q=2, canon="quimb"):
+        """Canonicalise + truncate the chain via quimb (cotengra/autoray).
+
+        ``decomp`` selects the per-bond decomposition (``'exact'`` full SVD, or
+        ``'rsvd'`` randomized with power iterations ``decomp_q`` + silent guard);
+        ``canon`` selects the canonicalisation QR (``'quimb'`` default, ``'householder'``,
+        ``'cholqr'``).  See :mod:`edmtn.evolution.quimb_decomp`.
+        """
         import quimb.tensor as qtn  # noqa: PLC0415
 
         if self.n <= 1:
             return self
         from ..backend.quimb_linalg import apply_quimb_cupy_compat  # noqa: PLC0415
+        from .quimb_decomp import compress_opts_for, canonize_opts_for  # noqa: PLC0415
 
         apply_quimb_cupy_compat()  # make quimb/autoray safe on CuPy-backed tensors
         cq = qtn.tensor_network_1d_compress(
             self.tn, max_bond=max_bond, cutoff=cutoff, method=method,
             site_tags=[f"I{p}" for p in range(self.n)], permute_arrays=False,
-            cutoff_mode=cutoff_mode, optimize="auto")
+            cutoff_mode=cutoff_mode, optimize="auto",
+            compress_opts=compress_opts_for(decomp, decomp_q),
+            canonize_opts=canonize_opts_for(canon))
         return QuimbEDM(cq, self.n, self.d, self.d_phys, self.rho0_vec, meta=self.meta)
 
     # -- single-bath step (one new time-site, Eq. 8) -----------------------
@@ -160,7 +170,8 @@ class QuimbEDM:
 
     # -- separable fold (MPO x MPS contraction + compression) --------------
 
-    def fold(self, mpo_sites, *, cutoff, cutoff_mode, method, max_bond):
+    def fold(self, mpo_sites, *, cutoff, cutoff_mode, method, max_bond,
+             decomp="exact", decomp_q=2, canon="quimb"):
         """Fold one sub-bath's combined-kernel MPO into the EDM, then compress.
 
         ``new[phi_up, (a_l, chi_l), (a_r, chi_r)] = sum_{phi_down}
@@ -192,4 +203,5 @@ class QuimbEDM:
         tn = qtn.TensorNetwork(folded)
         tn.fuse_multibonds(inplace=True)            # (v{p}, a{p}) -> single fused bond
         return QuimbEDM(tn, n, self.d, self.d_phys, self.rho0_vec, meta=self.meta).compress(
-            cutoff=cutoff, cutoff_mode=cutoff_mode, method=method, max_bond=max_bond)
+            cutoff=cutoff, cutoff_mode=cutoff_mode, method=method, max_bond=max_bond,
+            decomp=decomp, decomp_q=decomp_q, canon=canon)

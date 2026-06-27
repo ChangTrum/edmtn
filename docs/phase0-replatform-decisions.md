@@ -105,9 +105,37 @@ giving `⟨S_z⟩` deviations up to ~5e-4 — bounded and a numerical-knob artef
 correctness regression, but not trustworthy as the default. So `rel` is the default;
 `rsum2` (and `abs`/`sum2`/…) remain selectable via `compress_cutoff_mode`.
 
+## Sub-step 4 — rSVD + canonicalisation knobs on the quimb path (toward retiring `native`)
+
+quimb's `direct`/`zipup` take their per-bond decomposition from `compress_opts` and
+their canonicalisation QR from `canonize_opts`, both forwarded through
+`tensor_network_1d_compress`. `evolution/quimb_decomp.py` exposes two EDM knobs over
+that (opt-in, default unchanged):
+
+- **`compress_decomp`** = `'exact'` (default, full SVD/`eigh`) or `'rsvd'`. rSVD uses
+  quimb's own `rand_linalg.rsvd` with the **power-iteration knob `compress_decomp_q`**
+  (`2` = cold/robust = quimb's default, `0` = single-pass). A **silent resolution
+  guard** runs automatically: adaptive (`adapt+block`) mode grows the sketch until the
+  cutoff resolves; any failure / cap-hit-with-active-cutoff / non-NumPy backend falls
+  back to **exact full SVD** — so rSVD is never less reliable than full SVD. (CuPy uses
+  exact for now; GPU q-control is a follow-up to validate on c1.) `dm` is unaffected —
+  it is `eigh`-based, not SVD, so rSVD does not apply there.
+- **`compress_canon`** = `'quimb'` (default QR), `'householder'` (`'qr'`), or
+  `'cholqr'` (`'qr:cholesky'`, single-pass Cholesky QR). Our 2-pass CholQR2 has no exact
+  quimb equivalent; single-pass is kept as the available option (rarely used).
+
+This is the hybrid of plan item 0.1 (our rank/guard policy, quimb's sketch+SVD) and
+the last capability `native` had that the quimb path lacked. **Evidence:** Gaudin
+`⟨S_z(t)⟩` via `rsvd` (q=2 and q=0) and via the `householder`/`cholqr` canon options all
+reproduce the native solve to ~2e-9 (K=6). With this, the quimb path subsumes `native`
+— the retirement is the next milestone (default→quimb, delete `EDMMPS` compute /
+`StandardSVD` / `canonicalize` / native `truncate`, keep the dense brute-force as the
+independent reference), gated on strict CPU+GPU validation.
+
 ## Pending (not yet decided)
 
-- `RandomizedSVD` HMT vs quimb `rsvd`/`svds` (plan 0.1) — wrap + benchmark.
+- `RandomizedSVD` HMT vs quimb `rsvd`/`svds` (plan 0.1) — **resolved**: hybrid adopted
+  (sub-step 4).
 - `EDMMPS`/`KernelMPO` → quimb `MatrixProductState`/`MatrixProductOperator` container
   (plan 0.0 FOUNDATIONAL) — structural; no immediate perf claim, but the substrate for
   autoray/cotengra/cuQuantum throughout.

@@ -106,6 +106,41 @@ def test_container_reduced_dm_stays_on_gpu():  # pragma: no cover - GPU node onl
     assert rho.__class__.__module__.split(".")[0] == "cupy"  # stayed on device, no crash
 
 
+def test_decomp_canon_knobs_helpers():
+    """The decomposition/canonicalisation selectors map to the right quimb opts."""
+    from edmtn.evolution.quimb_decomp import compress_opts_for, canonize_opts_for
+
+    assert compress_opts_for("exact", 2) == {}
+    assert compress_opts_for("rsvd", 2) == {"method": "edm_rsvd"}  # registers the driver
+    import quimb.tensor.decomp as d
+    assert "edm_rsvd" in d._SPLIT_FNS
+    assert canonize_opts_for("quimb") == {}
+    assert canonize_opts_for("householder") == {"method": "qr"}
+    assert canonize_opts_for("cholqr") == {"method": "qr:cholesky"}
+    with pytest.raises(ValueError):
+        compress_opts_for("bogus", 2)
+    with pytest.raises(ValueError):
+        canonize_opts_for("bogus")
+
+
+@pytest.mark.parametrize("decomp,q,canon", [
+    ("rsvd", 2, "quimb"), ("rsvd", 0, "quimb"),
+    ("exact", 2, "householder"), ("exact", 2, "cholqr"),
+])
+def test_decomp_canon_knobs_match_exact(decomp, q, canon):
+    """rSVD (q=2/0, silent guard) and the canon options reproduce the native solve."""
+    model = GaudinModel(g=1.0, K=6)
+    common = dict(T=1.0, eps=0.25, expansion_order=2, cutoff=1e-6, channel=3)
+    ref = solve(model, **common)
+    got = solve(model, compression="quimb", compress_method="direct",
+                compress_cutoff_mode="rel", compress_cutoff=1e-8,
+                compress_decomp=decomp, compress_decomp_q=q, compress_canon=canon, **common)
+    n = min(len(ref.polarization), len(got.polarization))
+    err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
+                              - np.asarray(got.polarization[:n]))))
+    assert err < 1e-4
+
+
 @pytest.mark.parametrize("order", [1, 2])
 def test_container_single_bath_matches_physics(order):
     """Single-bath (spin-boson) <S_z(t)> via the quimb container (step + compress)
