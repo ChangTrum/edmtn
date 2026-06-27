@@ -87,6 +87,25 @@ def test_container_solver_matches_physics(mode, cutoff):
     assert err < 1e-4
 
 
+@pytest.mark.skipif(True, reason="no CuPy GPU available")
+def test_container_reduced_dm_stays_on_gpu():  # pragma: no cover - GPU node only
+    """reduced_density_matrix must keep CuPy-backed results on device (regression:
+    np.asarray forced an implicit CuPy->NumPy conversion and crashed the GPU path)."""
+    import cupy as cp  # noqa: PLC0415
+
+    rng = cp.random.default_rng(0)
+    d, d_phys, chi, n, d2 = 2, 7, 10, 5, 4
+    tensors, left = [], d2
+    for p in range(n):
+        right = d2 if p == n - 1 else chi
+        tensors.append((rng.standard_normal((d_phys, left, right))
+                        + 1j * rng.standard_normal((d_phys, left, right))).astype(cp.complex128))
+        left = right
+    mps = EDMMPS(tensors=tensors, d=d, d_phys=d_phys, rho0_vec=cp.ones(d2, cp.complex128))
+    rho = QuimbEDM.from_edmmps(mps).reduced_density_matrix()
+    assert rho.__class__.__module__.split(".")[0] == "cupy"  # stayed on device, no crash
+
+
 @pytest.mark.parametrize("order", [1, 2])
 def test_container_single_bath_matches_physics(order):
     """Single-bath (spin-boson) <S_z(t)> via the quimb container (step + compress)

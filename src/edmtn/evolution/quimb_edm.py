@@ -33,8 +33,6 @@ the native path while removing the custom container.
 
 from __future__ import annotations
 
-import numpy as np
-
 from .mps_utils import EDMMPS
 
 
@@ -122,7 +120,9 @@ class QuimbEDM:
         sel = self.tn.isel({f"k{p}": 0 for p in range(self.n)})
         net = sel | qtn.Tensor(self.rho0_vec, inds=("RHO0",))
         vec = net.contract(output_inds=("OUT",)).data
-        return np.asarray(vec).reshape(self.d, self.d)
+        # keep the result on its native backend (NumPy stays NumPy, CuPy stays CuPy);
+        # forcing np.asarray here breaks the GPU path (CuPy forbids implicit conversion)
+        return vec.reshape(self.d, self.d)
 
     # -- compression -------------------------------------------------------
 
