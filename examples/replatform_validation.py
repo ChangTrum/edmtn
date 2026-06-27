@@ -230,20 +230,54 @@ def battery_F_cpu_gpu(rep, tol):
         rep.add(f"F. CPU vs GPU quimb {label}", err < 1e-6, f"max|d<Sz>|={err:.2e}")
 
 
+def battery_G_knobs(rep, backend, tol, heavy):
+    """rSVD (q=2 cold / q=0 single-pass, silent guard) and the canonicalisation
+    options (householder / cholqr) must reproduce the native solve -- the last
+    capabilities native had, now on the quimb path."""
+    model = GaudinModel(g=1.0, K=16 if heavy else 12)
+    base = dict(T=4.0 if heavy else 3.0, eps=0.2, expansion_order=2, cutoff=1e-6,
+                channel=3, backend=backend)
+    ref = solve(model, **base)
+    combos = [
+        ("rsvd q2 direct", dict(compress_method="direct", compress_decomp="rsvd", compress_decomp_q=2)),
+        ("rsvd q0 direct", dict(compress_method="direct", compress_decomp="rsvd", compress_decomp_q=0)),
+        ("rsvd q2 zipup", dict(compress_method="zipup", compress_decomp="rsvd", compress_decomp_q=2)),
+        ("canon householder", dict(compress_method="zipup", compress_canon="householder")),
+        ("canon cholqr", dict(compress_method="zipup", compress_canon="cholqr")),
+    ]
+    for label, kw in combos:
+        got = solve(model, compression="quimb", compress_cutoff_mode="rel",
+                    compress_cutoff=1e-8, **kw, **base)
+        ns = min(len(ref.polarization), len(got.polarization))
+        err = float(np.max(np.abs(np.asarray(ref.polarization[:ns])
+                                  - _as_np(got.polarization)[:ns])))
+        rep.add(f"G. knob {label}", err < 1e-4, f"max|d<Sz>|={err:.2e}  bond q={got.max_bond}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--heavy", action="store_true", help="larger K/T (cluster)")
     ap.add_argument("--backend", default="cpu", choices=("cpu", "gpu"))
     ap.add_argument("--tol", type=float, default=1e-9, help="physics-invariant tolerance")
+    ap.add_argument("--batteries", default="A,BC,D,E,G,F",
+                    help="comma list of batteries to run (A,BC,D,E,G,F)")
     args = ap.parse_args()
+    sel = {b.strip().upper() for b in args.batteries.split(",")}
 
-    print(f"re-platform validation: backend={args.backend} heavy={args.heavy} tol={args.tol:g}")
+    print(f"re-platform validation: backend={args.backend} heavy={args.heavy} "
+          f"tol={args.tol:g} batteries={sorted(sel)}")
     rep = Report()
-    battery_A_ground_truth(rep, args.backend, args.tol)
-    battery_BC(rep, args.backend, args.tol, args.heavy)
-    battery_D_robustness(rep, args.backend, args.tol)
-    battery_E_trotter(rep, args.backend, args.tol)
-    if args.backend == "gpu":
+    if "A" in sel:
+        battery_A_ground_truth(rep, args.backend, args.tol)
+    if "BC" in sel:
+        battery_BC(rep, args.backend, args.tol, args.heavy)
+    if "D" in sel:
+        battery_D_robustness(rep, args.backend, args.tol)
+    if "E" in sel:
+        battery_E_trotter(rep, args.backend, args.tol)
+    if "G" in sel:
+        battery_G_knobs(rep, args.backend, args.tol, args.heavy)
+    if "F" in sel and args.backend == "gpu":
         battery_F_cpu_gpu(rep, args.tol)
     ok = rep.show()
     sys.exit(0 if ok else 1)
