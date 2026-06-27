@@ -55,14 +55,45 @@ class _SafeNamespaceCache(dict):
         return super().__contains__(self._coerce(key))
 
 
+def _patch_cupy_cholesky() -> None:
+    """Make ``cupy.linalg.cholesky`` accept the ``upper`` keyword.
+
+    quimb's Cholesky-QR (``method='qr:cholesky'``, our ``compress_canon='cholqr'``)
+    calls ``xp.linalg.cholesky(x, upper=False)``.  NumPy 2 accepts ``upper``; CuPy's
+    signature does not, so the call raises ``TypeError`` on the GPU.  CuPy returns
+    the lower factor (== ``upper=False``), so the shim just absorbs the kwarg (and
+    transposes for ``upper=True``).  Best-effort and idempotent; no-op without CuPy.
+    """
+    try:
+        import cupy  # noqa: PLC0415
+    except Exception:
+        return
+    chol = cupy.linalg.cholesky
+    if getattr(chol, "_edm_upper_shim", False):
+        return
+
+    def cholesky(a, upper=False):
+        L = chol(a)  # CuPy returns the lower-triangular factor
+        return L.conj().swapaxes(-1, -2) if upper else L
+
+    cholesky._edm_upper_shim = True
+    cupy.linalg.cholesky = cholesky
+    try:  # also override autoray's dispatch in case it cached the bare function
+        import autoray
+        autoray.register_function("cupy", "linalg.cholesky", cholesky)
+    except Exception:
+        pass
+
+
 def apply_quimb_cupy_compat() -> bool:
-    """Install the autoray namespace-cache shim.
+    """Install the autoray namespace-cache shim (and the CuPy cholesky shim).
 
     Idempotent and harmless for the NumPy backend.  Returns ``True`` if the shim
     is active, ``False`` if autoray is unavailable or its internals changed such
     that the shim no longer applies.
     """
     global _SHIM_APPLIED
+    _patch_cupy_cholesky()
     if _SHIM_APPLIED:
         return True
     try:
