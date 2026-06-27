@@ -253,12 +253,26 @@ def truncate(mps, strategy=None, *, max_bond=None, cutoff=0.0,
     return mps, infos
 
 
-def compress(mps, strategy=None, *, canon=None, **trunc):
+def compress(mps, strategy=None, *, canon=None, engine="native",
+             compress_cutoff=1e-12, compress_cutoff_mode="rel",
+             compress_method="zipup", **trunc):
     """Canonicalise then truncate in place; returns ``(mps, info_per_bond)``.
 
-    ``canon`` chooses the canonicalisation strategy (default Householder QR);
-    ``strategy`` chooses the truncation/decomposition strategy.
+    ``engine='native'`` (default) is the hand-rolled canonicalise + truncation
+    sweep: ``canon`` chooses the canonicalisation strategy (default Householder QR),
+    ``strategy`` the truncation/decomposition strategy.  ``engine='quimb'`` routes
+    the whole compression through quimb (``tensor_network_1d_compress``, cotengra/
+    autoray) with a quimb-native cutoff (``compress_cutoff`` / ``compress_cutoff_mode``
+    / ``compress_method``); ``canon``/``strategy`` are then unused.
     """
+    if engine == "quimb":
+        from .quimb_compress import compress_quimb  # noqa: PLC0415
+
+        return compress_quimb(mps, max_bond=trunc.get("max_bond"),
+                              cutoff=compress_cutoff, cutoff_mode=compress_cutoff_mode,
+                              method=compress_method)
+    if engine != "native":
+        raise ValueError(f"unknown compress engine {engine!r}; choose 'native' or 'quimb'")
     left_canonicalize(mps, canon=canon)
     return truncate(mps, strategy=strategy, **trunc)
 
