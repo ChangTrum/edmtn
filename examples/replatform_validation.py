@@ -96,7 +96,7 @@ def battery_A_ground_truth(rep, backend, tol):
     # solver paths agree at near-zero cutoff (exact) on this small case.
     common = dict(T=T, eps=eps, expansion_order=order, cutoff=0.0, channel=3, record_rho=True)
     ref = solve(model, **common)
-    q = solve(model, compression="quimb", compress_cutoff=1e-15, compress_cutoff_mode="rsum2",
+    q = solve(model, compression="quimb", compress_cutoff=1e-15, compress_cutoff_mode="rel",
               **common)
     nstep = min(len(ref.polarization), len(q.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:nstep]) - np.asarray(q.polarization[:nstep]))))
@@ -114,9 +114,14 @@ def battery_BC(rep, backend, tol, heavy):
         cases += [("Gaudin", GaudinModel(g=1.0, K=12), dict(T=3.0, eps=0.2, channel=3)),
                   ("SpinBoson", SpinBosonModel(J0=0.6, omega_c=5.0, mu=1.0), dict(T=2.0, eps=0.1, channel=1))]
 
+    # 'rel' is the trusted default (gated strictly); 'rsum2' is kept as an
+    # informational comparison only (it over-truncates spin-boson -- see the ledger),
+    # so its rows are reported but do not fail the suite (prefixed INFO).
     for label, model, base in cases:
         for order in (1, 2):
-            for mode, cut in [("rsum2", 1e-13), ("rel", 1e-8)]:
+            for mode, cut in [("rel", 1e-8), ("rsum2", 1e-13)]:
+                gate = mode == "rel"  # only the default mode gates pass/fail
+                pre = "" if gate else "INFO "
                 common = dict(**base, expansion_order=order, cutoff=1e-6, record_rho=True,
                               backend=backend)
                 t0 = time.perf_counter()
@@ -129,7 +134,7 @@ def battery_BC(rep, backend, tol, heavy):
                 ns = min(len(ref.polarization), len(q.polarization))
                 err = float(np.max(np.abs(np.asarray(ref.polarization[:ns]) - np.asarray(q.polarization[:ns]))))
                 tag = f"{label} o{order} {mode}"
-                rep.add(f"B. consistency {tag}", err < 1e-4,
+                rep.add(f"{pre}B. consistency {tag}", (err < 1e-4) or not gate,
                         f"max|d<Sz>|={err:.2e}  bond n={ref.max_bond} q={q.max_bond}  "
                         f"t_native={t_ref:.1f}s t_quimb={t_q:.1f}s")
                 # C. physics invariants: quimb must be no worse than native (the
@@ -143,12 +148,12 @@ def battery_BC(rep, backend, tol, heavy):
                         w["nonfinite"] = w["nonfinite"] or v["nonfinite"]
                     return w
                 wn, wq = _worst(ref), _worst(q)
-                slack = 5e-5  # quimb's cutoff differs (rsum2/rel vs rel_ref) -> small extra truncation
+                slack = 5e-5  # quimb's cutoff differs from rel_ref -> small extra truncation
                 ok = (not wq["nonfinite"]
                       and wq["trace"] <= wn["trace"] + slack
                       and wq["herm"] <= wn["herm"] + slack
                       and wq["pos"] <= wn["pos"] + slack)
-                rep.add(f"C. physics quimb<=native {tag}", ok,
+                rep.add(f"{pre}C. physics quimb<=native {tag}", ok or not gate,
                         f"|Tr-1| n={wn['trace']:.1e} q={wq['trace']:.1e} | "
                         f"herm n={wn['herm']:.1e} q={wq['herm']:.1e} | "
                         f"pos n={wn['pos']:.1e} q={wq['pos']:.1e}")
@@ -158,22 +163,23 @@ def battery_BC(rep, backend, tol, heavy):
                 frob = max(float(np.linalg.norm(_as_np(ref.evolution.density_matrices[i])
                                                 - _as_np(q.evolution.density_matrices[i])))
                            for i in range(nt))
-                rep.add(f"B2. rho(t) trajectory {tag}", frob < 1e-3, f"max||drho(t)||_F={frob:.2e}")
+                rep.add(f"{pre}B2. rho(t) trajectory {tag}", (frob < 1e-3) or not gate,
+                        f"max||drho(t)||_F={frob:.2e}")
 
 
 def battery_D_robustness(rep, backend, tol):
     model = GaudinModel(g=1.0, K=12)
     common = dict(T=3.0, eps=0.2, expansion_order=2, cutoff=1e-6, channel=3, backend=backend)
     # determinism: repeat must be bitwise identical
-    a = solve(model, compression="quimb", compress_cutoff_mode="rsum2", compress_cutoff=1e-13, **common)
-    b = solve(model, compression="quimb", compress_cutoff_mode="rsum2", compress_cutoff=1e-13, **common)
+    a = solve(model, compression="quimb", compress_cutoff_mode="rel", compress_cutoff=1e-13, **common)
+    b = solve(model, compression="quimb", compress_cutoff_mode="rel", compress_cutoff=1e-13, **common)
     drep = float(np.max(np.abs(np.asarray(a.polarization) - np.asarray(b.polarization))))
     rep.add("D. determinism (repeat)", drep == 0.0, f"max|d|={drep:.1e}")
     # cutoff convergence: tighter cutoff -> closer to native
     ref = solve(model, **common)
     errs = []
     for cut in (1e-8, 1e-11, 1e-14):
-        q = solve(model, compression="quimb", compress_cutoff_mode="rsum2", compress_cutoff=cut, **common)
+        q = solve(model, compression="quimb", compress_cutoff_mode="rel", compress_cutoff=cut, **common)
         ns = min(len(ref.polarization), len(q.polarization))
         errs.append(float(np.max(np.abs(np.asarray(ref.polarization[:ns]) - np.asarray(q.polarization[:ns])))))
     monotone = errs[0] >= errs[1] >= errs[2] - 1e-15
@@ -190,7 +196,7 @@ def battery_E_trotter(rep, backend, tol):
     for eps in (0.4, 0.2, 0.1):
         common = dict(T=2.0, eps=eps, expansion_order=2, cutoff=1e-6, channel=3, backend=backend)
         ref = solve(model, **common)
-        q = solve(model, compression="quimb", compress_cutoff_mode="rsum2",
+        q = solve(model, compression="quimb", compress_cutoff_mode="rel",
                   compress_cutoff=1e-13, **common)
         # compare the final-time observable (same physical T) across pipelines
         gap = abs(float(np.asarray(ref.polarization)[-1]) - float(np.asarray(q.polarization)[-1]))
@@ -210,7 +216,7 @@ def battery_F_cpu_gpu(rep, tol):
                                ("SpinBoson", SpinBosonModel(J0=0.6, omega_c=5.0, mu=1.0),
                                 dict(T=2.0, eps=0.1, channel=1))]:
         common = dict(**base, expansion_order=2, cutoff=1e-6, compression="quimb",
-                      compress_cutoff_mode="rsum2", compress_cutoff=1e-13)
+                      compress_cutoff_mode="rel", compress_cutoff=1e-13)
         c = solve(model, backend="cpu", **common)
         g = solve(model, backend="gpu", **common)
         ns = min(len(c.polarization), len(g.polarization))

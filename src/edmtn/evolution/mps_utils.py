@@ -254,7 +254,7 @@ def truncate(mps, strategy=None, *, max_bond=None, cutoff=0.0,
 
 
 def compress(mps, strategy=None, *, canon=None, engine="native",
-             compress_cutoff=1e-12, compress_cutoff_mode="rsum2",
+             compress_cutoff=1e-12, compress_cutoff_mode="rel",
              compress_method="zipup", **trunc):
     """Canonicalise then truncate in place; returns ``(mps, info_per_bond)``.
 

@@ -11,11 +11,12 @@ and virtual bonds; the operator-valued boundaries -- the dangling ``d**2`` outpu
 leg (``OUT``) and the ``rho0`` contraction leg (``RHO0``) -- are ordinary dangling
 indices that ride along the compression untouched.
 
-This path uses a **quimb-native cutoff mode** (default ``rsum2`` -- the standard
-discarded-weight criterion); the paper's ``rel_ref`` rule is intentionally retired
-(validated to reproduce the observable ``<S_z(t)>`` at a smaller bond, see
-``examples/quimb_fold_e2e.py``).  Arrays are kept on their native backend (no host
-round-trip), so this works on the GPU.
+This path uses a **quimb-native cutoff mode** (default ``rel`` -- discard
+``s_i / s_max < cutoff``); the paper's custom ``rel_ref`` rule is intentionally
+retired (validated to reproduce the observable ``<S_z(t)>``, see
+``examples/quimb_fold_e2e.py`` and the cluster validation in
+``docs/phase0-replatform-decisions.md``).  Arrays are kept on their native backend
+(no host round-trip), so this works on the GPU.
 """
 
 from __future__ import annotations
@@ -53,13 +54,16 @@ def _quimb_to_edmmps(tn, n, ref):
                   rho0_vec=ref.rho0_vec, meta=dict(ref.meta))
 
 
-def compress_quimb(mps, *, max_bond=None, cutoff=1e-12, cutoff_mode="rsum2",
+def compress_quimb(mps, *, max_bond=None, cutoff=1e-12, cutoff_mode="rel",
                    method="zipup"):
     """Compress the EDM-MPS via quimb; returns ``(mps, info_per_bond)``.
 
     Parameters mirror the native ``compress`` where they overlap.  ``cutoff`` and
-    ``cutoff_mode`` are quimb-native (default ``rsum2``); ``method`` selects quimb's
-    1D-compress algorithm (``zipup`` is fast and accurate here).
+    ``cutoff_mode`` are quimb-native; the default ``rel`` (discard ``s_i / s_max <
+    cutoff``) is the built-in closest to the paper's retired ``rel_ref`` rule and
+    the most faithful across both models (validated on cluster CPU+GPU; ``rsum2``
+    can over-truncate spin-boson, see ``docs/phase0-replatform-decisions.md``).
+    ``method`` selects quimb's 1D-compress algorithm (``zipup`` is fast/accurate).
     """
     n = mps.num_sites
     if n <= 1:

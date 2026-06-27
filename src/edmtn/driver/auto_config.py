@@ -64,7 +64,7 @@ class SolverConfig:
     canonicalization: object | None = None  # None -> Householder QR; e.g. CholeskyQR()
     compression: str = "native"  # 'native' | 'quimb' (quimb: tensor_network_1d_compress, ecosystem path)
     compress_cutoff: float = 1e-12        # quimb path cutoff
-    compress_cutoff_mode: str = "rsum2"   # quimb path cutoff mode
+    compress_cutoff_mode: str = "rel"     # quimb path cutoff mode (rel: faithful to rel_ref; see docs)
     compress_method: str = "zipup"        # quimb path 1D-compress method
     preset: str | None = None  # None | 'balanced' | 'robust' (see docs/recommended-config.md)
     sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)

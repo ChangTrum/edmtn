@@ -80,7 +80,7 @@ class SeparableBathEvolution:
 
     def __init__(self, expander=None, decomposition=None, canonicalization=None,
                  compression="native", compress_cutoff=1e-12,
-                 compress_cutoff_mode="rsum2", compress_method="zipup"):
+                 compress_cutoff_mode="rel", compress_method="zipup"):
         self.expander = expander if expander is not None else SecondOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(f"unsupported expansion order {self.expander.order}")

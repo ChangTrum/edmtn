@@ -27,8 +27,8 @@ compression) -- *not* a fused single-pass apply, which the Phase-0 ledger showed
 keeps ~2x the bond and is slower (``docs/phase0-replatform-decisions.md``).  So the
 kernel is contracted into the EDM exactly (forming the fused ``a*chi`` bond),
 parallel bonds are fused, and only then is the chain compressed (zipup, a
-quimb-native ``rsum2`` cutoff).  This keeps the observable ``<S_z(t)>`` identical to
-the native path while removing the custom container.
+quimb-native ``rel`` cutoff by default).  This keeps the observable ``<S_z(t)>``
+identical to the native path while removing the custom container.
 """
 
 from __future__ import annotations

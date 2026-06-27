@@ -77,6 +77,34 @@ not better. Single-GPU contraction-fusion therefore cannot raise the capacity ce
 
 ---
 
+## Sub-step 3 — EDM container: **REPLACE → quimb `TensorNetwork`** (adopted)
+
+`EDMMPS` is carried as a generic 1D quimb `TensorNetwork` across the whole evolution
+(`evolution/quimb_edm.py`, `QuimbEDM`): the separable fold (`fold` = per-site MPO×MPS
+contraction + `fuse_multibonds` + compress) and the single-bath step (`step`, reusing
+the validated `apply_step`) both run in-container; `reduced_density_matrix` /
+`bond_dims` are quimb contractions. Both engines (`separable_bath`, `single_bath`) use
+it when `compression='quimb'` and hand back a plain `EDMMPS` for observable extraction.
+Default `'native'` unchanged. Commits `5eb1934` (separable), `3f23142` (single-bath),
+`bad7f0c` (GPU `reduced_density_matrix` keeps the result on the native backend —
+`np.asarray` had forced an implicit CuPy→NumPy conversion and crashed the GPU path).
+
+## Cutoff mode — **default `rel`** (not `rsum2`)
+
+The quimb path default cutoff mode is **`rel`** (discard `s_i / s_max < cutoff`), the
+built-in closest to the retired custom `rel_ref` (`s_i / s_{d²+1} ≤ ξ`); both diverge
+from `rsum2` mainly when the `d²+1` reference sits far below `s_max` (spin-boson).
+
+**Evidence (cluster validation, `examples/replatform_validation.py --heavy`).** On the
+c1 A800 (GPU) and a9 dual-EPYC-9754 (CPU), `rel` reproduces the native `⟨S_z(t)⟩` and the
+full `ρ(t)` trajectory to **≤7e-6** across *both* models, orders 1&2, and the heavy grid
+(Gaudin K=24/T=6), and quimb's physical-invariant deviations stay ≤ native's. The
+**CPU↔GPU cross-check passes** (Gaudin 1.4e-7, spin-boson 1.6e-13) and determinism is
+exact. `rsum2@1e-13`, by contrast, **over-truncates spin-boson** (bond e.g. 29 vs 79),
+giving `⟨S_z⟩` deviations up to ~5e-4 — bounded and a numerical-knob artefact, not a
+correctness regression, but not trustworthy as the default. So `rel` is the default;
+`rsum2` (and `abs`/`sum2`/…) remain selectable via `compress_cutoff_mode`.
+
 ## Pending (not yet decided)
 
 - `RandomizedSVD` HMT vs quimb `rsvd`/`svds` (plan 0.1) — wrap + benchmark.

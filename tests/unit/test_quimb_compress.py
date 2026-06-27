@@ -59,9 +59,12 @@ def test_quimb_unknown_does_not_affect_native_default():
     common = dict(T=2.0, eps=0.2, expansion_order=2, cutoff=1e-6, max_bond=400, channel=3)
     ref = solve(model, **common)
     assert ref.backend  # ran
-    # default config uses the native engine
+    # default config uses the native engine; the quimb path defaults to the 'rel'
+    # cutoff mode (validated faithful to rel_ref; rsum2 over-truncates spin-boson)
     from edmtn.driver.auto_config import SolverConfig
-    assert SolverConfig(eps=0.2, T=2.0).compression == "native"
+    cfg = SolverConfig(eps=0.2, T=2.0)
+    assert cfg.compression == "native"
+    assert cfg.compress_cutoff_mode == "rel"
 
 
 @pytest.mark.parametrize("mode,cutoff", [("rsum2", 1e-13), ("rel", 1e-8)])
