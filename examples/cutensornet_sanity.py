@@ -63,17 +63,19 @@ def exact_vs_track1():
 
 
 def approx_vs_exact():
-    _section("approx mode: err scales with cutoff")
-    model = GaudinModel(g=1.0, K=4, time_step_order=1)
-    N = 5
-    ref = track1_final_rho(model, 1, 0.1, N)
+    _section("approx mode: err vs cutoff (truncation engaged), vs exact-hpc")
+    model = GaudinModel(g=1.0, K=6, time_step_order=1)
+    N = 9  # longer evolution so the EDM bond grows enough for the cutoff to bite
+    cfg_ex = SolverConfig(eps=0.1, T=N * 0.1, expansion_order=1, backend="hpc",
+                          compress_decomp="exact")
+    rho_ex = solve_cutensornet(model, cfg_ex, channel=None, executor="cuquantum")["final_rho"]
     for cutoff in (1e-2, 1e-4, 1e-6):
         cfg = SolverConfig(eps=0.1, T=N * 0.1, expansion_order=1, backend="hpc",
                            compress_decomp="approx", cutoff=cutoff, cutoff_mode="rel",
-                           max_bond=128)
-        out = solve_cutensornet(model, cfg, channel=3, executor="cuquantum")
-        err = float(np.max(np.abs(out["final_rho"] - ref)))
-        print(f"  cutoff={cutoff:.0e}: max|Δ vs exact|={err:.2e} "
+                           max_bond=256)
+        out = solve_cutensornet(model, cfg, channel=None, executor="cuquantum")
+        err = float(np.max(np.abs(out["final_rho"] - rho_ex)))
+        print(f"  cutoff={cutoff:.0e}: max|Δ vs exact-hpc|={err:.2e} "
               f"herm={out['error_metrics']['hermiticity']:.1e}")
 
 
