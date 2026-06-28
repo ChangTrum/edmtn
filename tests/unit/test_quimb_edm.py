@@ -43,12 +43,11 @@ def test_container_roundtrip_and_reduced_dm():
     assert np.max(np.abs(back.reduced_density_matrix() - mps.reduced_density_matrix())) < 1e-10
 
 
-def test_container_fold_matches_native():
-    """One quimb container fold == native _apply_sub_bath + quimb compress."""
+def test_container_fold_method_consistency():
+    """A container fold is consistent across compression methods at a tight cutoff."""
     from edmtn.kernels.separable_mpo import SeparableKernelEngine
     from edmtn.expansion.second_order import SecondOrderExpander
     from edmtn.evolution.separable_bath import SeparableBathEvolution
-    from edmtn.evolution.mps_utils import compress
 
     model = GaudinModel(g=1.0, K=4)
     eps, T, order = 0.25, 1.0, 2
@@ -61,26 +60,20 @@ def test_container_fold_matches_native():
     base = ev._build_system_mps(model, eps, n_steps, order, d, d_phys, rho0, lambda a: a)
 
     mpo = list(ke.for_sub_bath(0).get_kernel_mpo(n).site_tensors)
-    cut, mode = 1e-13, "rsum2"
-    # native two-stage
-    nat = ev._apply_sub_bath(base.copy(), mpo, d, d_phys, rho0)
-    nat, _ = compress(nat, engine="quimb", compress_cutoff=cut,
-                      compress_cutoff_mode=mode, compress_method="zipup", max_bond=None)
-    # container fold
-    con = QuimbEDM.from_edmmps(base.copy()).fold(
-        mpo, cutoff=cut, cutoff_mode=mode, method="zipup", max_bond=None)
-    assert con.max_bond == nat.max_bond
-    assert np.max(np.abs(con.reduced_density_matrix() - nat.reduced_density_matrix())) < 1e-8
+    a = QuimbEDM.from_edmmps(base.copy()).fold(
+        mpo, cutoff=1e-12, cutoff_mode="rel", method="zipup", max_bond=None)
+    b = QuimbEDM.from_edmmps(base.copy()).fold(
+        mpo, cutoff=1e-12, cutoff_mode="rel", method="direct", max_bond=None)
+    assert np.max(np.abs(a.reduced_density_matrix() - b.reduced_density_matrix())) < 1e-9
 
 
 @pytest.mark.parametrize("mode,cutoff", [("rsum2", 1e-13), ("rel", 1e-8)])
-def test_container_solver_matches_physics(mode, cutoff):
-    """Separable Gaudin <S_z(t)> via the quimb container matches the native solve."""
+def test_container_solver_physics_converges(mode, cutoff):
+    """Separable Gaudin <S_z(t)> at a working cutoff matches a tight reference."""
     model = GaudinModel(g=1.0, K=12)
-    common = dict(T=3.0, eps=0.2, expansion_order=2, cutoff=1e-6, max_bond=400, channel=3)
-    ref = solve(model, **common)
-    got = solve(model, compression="quimb", compress_cutoff_mode=mode,
-                compress_cutoff=cutoff, **common)
+    common = dict(T=3.0, eps=0.2, expansion_order=2, max_bond=400, channel=3)
+    ref = solve(model, cutoff=1e-12, cutoff_mode="rel", **common)  # tight reference
+    got = solve(model, cutoff=cutoff, cutoff_mode=mode, **common)
     n = min(len(ref.polarization), len(got.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
                               - np.asarray(got.polarization[:n]))))
@@ -130,10 +123,9 @@ def test_decomp_canon_knobs_helpers():
 def test_decomp_canon_knobs_match_exact(decomp, q, canon):
     """rSVD (q=2/0, silent guard) and the canon options reproduce the native solve."""
     model = GaudinModel(g=1.0, K=6)
-    common = dict(T=1.0, eps=0.25, expansion_order=2, cutoff=1e-6, channel=3)
-    ref = solve(model, **common)
-    got = solve(model, compression="quimb", compress_method="direct",
-                compress_cutoff_mode="rel", compress_cutoff=1e-8,
+    common = dict(T=1.0, eps=0.25, expansion_order=2, cutoff=1e-8, cutoff_mode="rel", channel=3)
+    ref = solve(model, compress_method="direct", **common)  # default decomp=exact
+    got = solve(model, compress_method="direct",
                 compress_decomp=decomp, compress_decomp_q=q, compress_canon=canon, **common)
     n = min(len(ref.polarization), len(got.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
@@ -142,14 +134,13 @@ def test_decomp_canon_knobs_match_exact(decomp, q, canon):
 
 
 @pytest.mark.parametrize("order", [1, 2])
-def test_container_single_bath_matches_physics(order):
-    """Single-bath (spin-boson) <S_z(t)> via the quimb container (step + compress)
-    matches the native solve -- the chain-growing engine, not the separable fold."""
+def test_container_single_bath_physics_converges(order):
+    """Single-bath (spin-boson) <S_z(t)> at a working cutoff matches a tight reference
+    -- the chain-growing engine (step + compress), not the separable fold."""
     model = SpinBosonModel(J0=0.6, omega_c=5.0, mu=1.0)
-    common = dict(T=2.0, eps=0.1, expansion_order=order, cutoff=1e-6, channel=1)
-    ref = solve(model, **common)
-    got = solve(model, compression="quimb", compress_cutoff_mode="rsum2",
-                compress_cutoff=1e-13, **common)
+    common = dict(T=2.0, eps=0.1, expansion_order=order, channel=1)
+    ref = solve(model, cutoff=1e-12, cutoff_mode="rel", **common)
+    got = solve(model, cutoff=1e-8, cutoff_mode="rel", **common)
     n = min(len(ref.polarization), len(got.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
                               - np.asarray(got.polarization[:n]))))

@@ -64,11 +64,14 @@ def test_second_order_trace_and_hermitian():
     eps = 0.05
     engine = _engine(model, eps, 20, order=2)
     res = SingleBathEvolution(expander=SecondOrderExpander()).run(
-        model, engine, eps, n_steps=20, record_rho=True, cutoff=1e-7
+        model, engine, eps, n_steps=20, record_rho=True, cutoff=1e-9
     )
     for rho in res.density_matrices:
         assert np.isclose(np.trace(rho), 1.0, atol=1e-6)
-        np.testing.assert_allclose(rho, rho.conj().T, atol=1e-8)
+        # the single-pass zipup compression is mildly gauge-asymmetric, so the
+        # reduced state is Hermitian up to a cutoff-scaled floor (~1e-6 at 1e-9),
+        # not bit-exact symmetric like the retired symmetric-truncation native path
+        np.testing.assert_allclose(rho, rho.conj().T, atol=5e-6)
 
 
 # --------------------------------------------------------------------------

@@ -146,7 +146,6 @@ class EDMSolver:
             max_bond=cfg.max_bond,
             cutoff=cfg.cutoff,
             cutoff_mode=cfg.cutoff_mode,
-            ref_index=cfg.ref_index,
             record_rho=need_rho,
             convert=convert,
         )
@@ -209,7 +208,6 @@ class EDMSolver:
             max_bond=cfg.max_bond,
             cutoff=cfg.cutoff,
             cutoff_mode=cfg.cutoff_mode,
-            ref_index=cfg.ref_index,
             record_rho=cfg.record_rho,
             sub_baths=cfg.sub_baths,
             convert=convert,
@@ -249,9 +247,11 @@ class EDMSolver:
             cutoff=self.config.cutoff,
             cutoff_mode=self.config.cutoff_mode,
             max_bond=self.config.max_bond,
-            ref_index=self.config.ref_index,
             expansion_order=self.config.expansion_order,
-            decomposition=self.config.decomposition,
+            compress_method=self.config.compress_method,
+            compress_decomp=self.config.compress_decomp,
+            compress_decomp_q=self.config.compress_decomp_q,
+            compress_canon=self.config.compress_canon,
         )
         fine = EDMSolver(self.model, fine_cfg).solve(channel=channel)
         dev = max_history_deviation(
