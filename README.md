@@ -106,14 +106,19 @@ res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 | `cutoff_mode` | `rel`, `rsum2`, `abs`, … (`rel`) | quimb truncation rule (`rel` = `s_i/s_max < ξ`; the built-in closest to the retired `rel_ref`) |
 | `max_bond` | int or `None` (`None`) | hard bond-dimension cap |
 | `compress_method` | `zipup`, `dm`, `direct` (`zipup`) | quimb 1D-compress algorithm |
-| `compress_decomp` | `exact`, `rsvd` (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + silent guard) |
-| `compress_decomp_q` | int (`2`) | rSVD power iterations (`2` = cold/robust, `0` = single-pass/fast) |
-| `compress_canon` | `quimb`, `householder`, `cholqr` (`quimb`) | canonicalisation QR |
-| `preset` | `balanced`, `robust`, `None` (`None`) | fills the recommended decomposition (see below) |
-| `sub_baths` | int or `None` (`None`) | separable bath: fold only the first `L` sub-baths (Fig. 6) |
-| `backend` | `auto`, `cpu`, `gpu` (`auto`) | compute device (`auto` → CPU) |
+| `compress_decomp` | cpu/gpu: `exact`,`rsvd`; **hpc: `exact`,`approx`** (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + guard). Under `hpc`: `exact` = no truncation (no knobs), `approx` = cutoff-truncated |
+| `compress_decomp_q` | int (`2`) | rSVD power iterations (`2` = cold/robust, `0` = single-pass/fast). *N/A under `hpc`* |
+| `compress_canon` | `quimb`, `householder`, `cholqr` (`quimb`) | canonicalisation QR. *N/A under `hpc`* |
+| `preset` | `balanced`, `robust`, `None` (`None`) | fills the recommended decomposition (cpu/gpu only) |
+| `sub_baths` | int or `None` (`None`) | separable bath: fold/contract only the first `L` sub-baths (Fig. 6) |
+| `backend` | `cpu`, `gpu`, `hpc` (`cpu`) | `cpu`/`gpu` = Track 1 (NumPy/CuPy); `hpc` = Track 2, the cuQuantum 2D contraction |
+| `pathfinder` | `cuquantum`, `cotengra` (`cuquantum`) | **`hpc` only** — who finds the contraction path (default: cuTensorNet owns it) |
+| `time_windows` | int or `None` (`None`) | **`hpc` only** — `None` = one-shot whole-spacetime; int = manual window blocking |
 
-`solve(...).backend` reports the resolved device.
+`solve(...).backend` reports the resolved device/track.
+
+Note: `compress_method` is a quimb 1D-MPS-compress algorithm and applies to `cpu`/`gpu`
+only (the `hpc` 2D contraction has no 1D-compress sweep).
 
 **Compression.** Everything goes through quimb's `tensor_network_1d_compress`
 (canonicalise + truncate in one sweep), executed via autoray on whatever backend the
@@ -141,10 +146,36 @@ res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8, max_bond=400,
 A preset only fills `compress_decomp`/`compress_decomp_q` if you left them at the
 default; it never overrides `backend`.
 
-**Backend.** `auto`/`cpu` runs on NumPy; `gpu` runs on CuPy (needs a matching CuPy
+**Backend.** `cpu` (default) runs on NumPy; `gpu` runs on CuPy (needs a matching CuPy
 wheel — see *Environment*). GPU pays off once the bond is large; small problems are
 CPU-competitive. The compute is backend-agnostic (autoray), so results agree across
 devices to round-off.
+
+**HPC track (`backend='hpc'`).** A separate, NVIDIA-GPU-only track for precision and
+large heavy jobs. Instead of Track 1's sequential fold-then-compress, it lays the
+whole separable-bath EDM out as a **2D space×time tensor network** (paper Sec. V) and
+contracts it **in one shot with cuQuantum (cuTensorNet)**, which owns path search,
+slicing, hardware scheduling, and execution (cotengra stays a selectable fallback
+path-finder; everything routes through quimb). Two modes via `compress_decomp`:
+`exact` (genuinely no truncation, no knobs) and `approx` (cutoff/cutoff_mode/max_bond).
+The **density operator ρ(t) is returned first-class** (`result.density_matrices`), the
+channel polarization is derived only if `channel` is given, and **both modes report
+reference error metrics** (`result.error_metrics`: ‖ρ−ρ†‖, |Tr ρ−1|, plus optimizer
+slices/flops or discarded weight). One-shot failures (precision unreachable / slicing /
+OOM) raise an explicit error pointing to manual time-window blocking — no silent
+fallback. Needs `cuquantum-python-cu12`; never imported on the Track-1 (CPU/Win/Mac)
+path. Design + status: [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+
+```python
+# exact: no truncation, cuTensorNet owns path+slicing; ρ(t) + error metrics returned
+res = solve(GaudinModel(g=1.0, K=24), T=6.0, eps=0.1, channel=3,
+            backend='hpc', compress_decomp='exact')
+res.density_matrices, res.error_metrics      # ρ(t), {hermiticity, trace_dev, num_slices, …}
+
+# approx: cutoff-truncated through quimb
+res = solve(GaudinModel(g=1.0, K=24), T=6.0, eps=0.1, channel=3,
+            backend='hpc', compress_decomp='approx', cutoff=1e-8, max_bond=400)
+```
 
 ## Performance & design notes
 
