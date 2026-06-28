@@ -67,8 +67,8 @@ def main():
     ap.add_argument("--cutoff", type=float, default=1e-6, help="SVD truncation precision")
     ap.add_argument("--max-bond", type=int, default=400, help="hard bond-dim cutoff D_c")
     ap.add_argument("--order", type=int, default=2, choices=(1, 2))
-    ap.add_argument("--backend", default="auto", choices=("auto", "cpu", "gpu"),
-                    help="compute backend ('auto' uses the GPU for Gaudin)")
+    ap.add_argument("--backend", default="cpu", choices=("cpu", "gpu"),
+                    help="compute backend (Track 1: numpy/cupy)")
     ap.add_argument("--quick", action="store_true",
                     help="fast preview (K=20, Ls=5,10,20, T=6, eps=0.1, D_c=100)")
     ap.add_argument("--name", default="fig6", help="output file base name")

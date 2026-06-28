@@ -58,19 +58,22 @@ class SolverConfig:
     max_bond: int | None = None
     expansion_order: int = 1
     record_rho: bool = False
-    compress_method: str = "zipup"        # quimb 1D-compress method: 'zipup' | 'dm' | 'direct'
-    compress_decomp: str = "exact"        # per-bond decomposition: 'exact' | 'rsvd'
-    compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass)
-    compress_canon: str = "quimb"         # canonicalisation: 'quimb' | 'householder' | 'cholqr'
-    preset: str | None = None  # None | 'balanced' | 'robust' (see docs/recommended-config.md)
-    sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
-    backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
+    compress_method: str = "zipup"        # 'zipup'|'dm'|'direct' (quimb 1D-compress; N/A under backend='hpc')
+    compress_decomp: str = "exact"        # cpu/gpu: 'exact'|'rsvd'.  hpc: 'exact'(no knobs)|'approx'
+    compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass; N/A under 'hpc')
+    compress_canon: str = "quimb"         # 'quimb'|'householder'|'cholqr' (canon QR; N/A under 'hpc')
+    preset: str | None = None  # None|'balanced'|'robust' (cpu/gpu only; see docs/recommended-config.md)
+    sub_baths: int | None = None  # separable bath only: fold/contract just the first L sub-baths (Fig. 6)
+    backend: str = "cpu"   # 'cpu'|'gpu' -> numpy/cupy (Track 1); 'hpc' -> cuQuantum 2D contraction
     precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
+    # -- backend='hpc' only; ignored otherwise --
+    pathfinder: str = "cuquantum"   # 'cuquantum' (default, cuTensorNet owns path) | 'cotengra'
+    time_windows: int | None = None  # None = one-shot whole-spacetime; int = manual window blocking
 
     def __post_init__(self):
-        # Resolve a preset onto the compression knobs; never override an explicit
-        # (non-default) decomposition choice.  Default (preset=None): exact full SVD.
-        if self.preset is None:
+        # Presets are Track-1 rСVD recipes; they don't apply to the hpc track
+        # (where compress_decomp is exact/approx) -- never silently flip its mode.
+        if self.preset is None or self.backend == "hpc":
             return
         if self.preset not in _PRESETS:
             raise ValueError(

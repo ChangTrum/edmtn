@@ -49,6 +49,8 @@ class SolverResult:
     mps: object = None
     evolution: object = None
     backend: str = ""
+    density_matrices: object = None  # ρ(t) history (the hpc track returns this first-class)
+    error_metrics: dict | None = None  # hpc only: ‖ρ−ρ†‖ / |Tr ρ−1| (+ slices/flops or discarded weight)
 
     @property
     def max_bond(self) -> int:
@@ -69,7 +71,11 @@ class EDMSolver:
     def __init__(self, model, config: SolverConfig):
         self.model = model
         self.config = config
-        self.kernel_engine, self.evolution = build_pipeline(model, config)
+        # the hpc (cuQuantum 2D) track builds nothing from the Track-1 pipeline
+        if config.backend == "hpc":
+            self.kernel_engine = self.evolution = None
+        else:
+            self.kernel_engine, self.evolution = build_pipeline(model, config)
 
     @classmethod
     def from_model(cls, model, *, T: float, eps: float, **kwargs) -> "EDMSolver":
@@ -81,10 +87,10 @@ class EDMSolver:
     def _resolve_backend(self):
         """Return ``(convert, memory, label)`` for the configured backend.
 
-        ``backend='auto'`` resolves to **CPU** for the Phase-1/2 models: the EDM
-        hot path is many sequential medium SVD/QR calls with Python orchestration
-        between them, where the CPU beats the GPU at the bond dimensions these
-        phases reach (benchmarks in ``tests/benchmarks/perf_*`` and the analysis
+        ``backend='cpu'`` (the default) runs on NumPy: the EDM hot path is many
+        sequential medium SVD/QR calls with Python orchestration between them,
+        where the CPU beats the GPU at the bond dimensions these phases reach
+        (benchmarks in ``tests/benchmarks/perf_*`` and the analysis
         in ``docs/cpu-vs-gpu-edm.md``).  The GPU stays a first-class, validated
         option via explicit ``backend='gpu'`` -- it becomes the faster path once
         the Phase-3 decomposition layer (randomized / single-pass SVD) shifts the
@@ -95,10 +101,8 @@ class EDMSolver:
 
         cfg = self.config
         pref = cfg.backend
-        if pref not in ("auto", "cpu", "numpy", "gpu", "cupy"):
+        if pref not in ("cpu", "numpy", "gpu", "cupy"):
             raise ValueError(f"unknown backend {cfg.backend!r}")
-        if pref == "auto":
-            pref = "cpu"
         precision = (
             PrecisionPolicy.mixed() if cfg.precision == "mixed" else PrecisionPolicy.full_f64()
         )
@@ -129,6 +133,8 @@ class EDMSolver:
         channel : int
             Coupling channel whose polarization history is returned.
         """
+        if self.config.backend == "hpc":
+            return self._solve_hpc(observables, channel=channel)
         if self.model.bath_type == "separable":
             return self._solve_separable(observables, channel=channel)
 
@@ -180,6 +186,33 @@ class EDMSolver:
             mps=ev.mps,
             evolution=ev,
             backend=backend_label,
+        )
+
+    # -- hpc track (cuQuantum 2D one-shot contraction) --------------------
+
+    def _solve_hpc(self, observables: dict | None, *, channel: int) -> SolverResult:
+        """Solve on the HPC track: lay the EDM out as a 2D space×time network and
+        contract it with cuQuantum (cuTensorNet). Returns ρ(t) first-class plus the
+        channel polarization and the reference error metrics."""
+        if observables:
+            raise NotImplementedError(
+                "custom per-time observables are not supported on the hpc track; "
+                "read result.density_matrices (ρ(t)) or use the channel polarization")
+        from ..evolution.cutensornet import solve_cutensornet  # noqa: PLC0415
+
+        out = solve_cutensornet(self.model, self.config, channel=channel,
+                                executor="cuquantum")
+        return SolverResult(
+            times=out["times"],
+            polarization=out["polarization"],
+            bond_dims=[],            # cuTensorNet manages bonds internally (one-shot)
+            truncation_errors=[],
+            observables={},
+            mps=None,
+            evolution=None,
+            backend=f"hpc/{out['mode']}/{out['pathfinder']}",
+            density_matrices=out["density_matrices"],
+            error_metrics=out["error_metrics"],
         )
 
     # -- separable bath (outer-loop recursion) ----------------------------
