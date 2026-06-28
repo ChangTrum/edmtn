@@ -1,231 +1,163 @@
-# Phase 5 design study — multi-GPU + cuQuantum (cuTensorNet) scale-out
+# Track 2 — cuQuantum (cuTensorNet) HPC track: design & status
 
-Status: **research / design only** (no implementation). Drafted while the P5a
-single-GPU benchmark runs. Goal: how to push edmtn to ultra-large-scale OQS
-(bigger/more-complex baths, longer evolution) using multi-GPU and a cuTensorNet
-backend, exploiting NVLink, FP64 Tensor Cores, and InfiniBand RDMA. The CPU
-pipeline is treated as done — fallback / small-scale fast path.
+Status: **design settled (2026-06-28); Phase A DONE.** This is the authoritative
+Track 2 record. Track 1 (the portable, validated quimb pipeline on `main`) is the
+default + correctness anchor and stays byte-for-byte unchanged and cuQuantum-free.
+The full phase plan lives in the approved plan file `sharded-wishing-blossom.md`;
+this doc carries the design rationale + per-phase evidence.
 
-This sits *beyond* the current `edm_technical_plan.md` roadmap (Phase 4 =
-Ozaki GEMM + mixed precision + new models). It is effectively **Phase 5:
-distributed scale-out**.
+Track 2 is the **HPC-only** track: it exists to push **precision** and run **large
+heavy** jobs by squeezing NVIDIA hardware. It does **not** reuse Track 1's
+sequential fold-then-compress (1D-MPS-in-time). It lays the whole separable-bath
+EDM out as a **2D space×time tensor network** (paper Sec. V) and hands it to
+cuTensorNet.
 
-## 0. Design principles (directives — read before the rest)
+## Firm decisions (immutable for Track 2)
 
-**Two cleanly separated tracks. They do not share a distribution layer.**
+1. **Forced binding: NVIDIA GPU + cuQuantum (cuTensorNet) + 2D network.** Not
+   configurable; never imported on the Track-1 (CPU/Win/Mac) path.
+2. **cotengra excluded; cuTensorNet owns the pipeline** — contraction-path search,
+   slicing, hardware scheduling / device & memory management, execution. Rationale:
+   one data structure end-to-end + cuTensorNet's optimizer is hardware-aware
+   (co-optimizes path + slice count against device memory / NVLink). Escape hatch
+   (API-level only): feed a precomputed path to cuTensorNet's *executor* if its
+   optimizer underperforms on our 2D net.
+3. **2D network, one-shot whole-spacetime preferred.** Slicing + scheduling +
+   resource management are cuTensorNet's job — the one-shot whole-spacetime network
+   is exactly what it should slice/schedule. A **manual time-window blocking /
+   bounding** mode (windowed 2D with a compressed boundary between windows) is
+   retained, but it is **user-invoked, never auto-triggered** (see decision 6).
+4. **Two levers, separate success criteria.** 2D + cuTensorNet = **precision +
+   global-optimization** (less/deferred truncation, globally good order).
+   Single-node multi-GPU = **capacity** (slice the big contraction across cards;
+   the linear temporal-bond growth is physics — no order avoids it).
+5. **Multi-GPU mechanism decided, no spike:** cuTensorNet **distributed slicing** —
+   one MPI rank per GPU + automatic slice distribution. MPI-based ⇒ single-node
+   4×A800 and multi-node are the same code path, different launch geometry ⇒
+   cross-node is a near-free stub.
+6. **No silent guard — fail loud, user decides.** Unlike Track 1's silent rSVD
+   resolution guard, Track 2 **raises an explicit, descriptive error** on any
+   failure of the one-shot path — *including but not limited to* the precision
+   target (ξ) being unreachable, slicing failing, or OOM — telling the user they
+   may need to **manually construct time-window blocking**, then leaving the
+   decision to them. There is **no automatic fallback** from one-shot to windowed,
+   and **no silent acceptance** of worse-than-requested precision.
+7. **Parameters flow through quimb.** `cutoff` / `cutoff_mode` / `max_bond` and the
+   other knobs are passed via **quimb's existing unified API**, which dispatches to
+   the cuQuantum/cuTensorNet backend (quimb already supports it). A parameter is
+   passed **directly** to cuTensorNet (optionally bypassing quimb) **only** when, as
+   with Track 1's CholQR2 `q`, quimb does not expose an otherwise-hidden knob we
+   need. Default = through quimb; direct = the documented exception.
 
-**Track 1 — Custom pipeline: portable, NON-distributed.**
-1. Scope = **pure CPU (including multi-socket within a single node) and single
-   GPU**. This is already basically sufficient for it; it does **not** implement
-   distribution at all.
-2. It is the portable everyday + fallback path: runs on **Windows / macOS /
-   Linux**, CPU-only or one GPU. This is why it stays vendor-neutral (no
-   cuQuantum dependency) — exactly the platforms that cannot run cuQuantum.
-3. All current work lives here (the `RandomizedSVD` from P1, StandardSVD, the
-   CPU/single-GPU backends). It remains the maintained reference.
+## Shared seam with Track 1
 
-**Track 2 — Distributed pipeline: Linux-HPC, GPU-only, ultra-large-scale.**
-4. Distribution is **only** for the Linux HPC ultra-large-scale regime; hardware
-   is **GPU** (multi-GPU / multi-node). **CPU-distributed is out of scope** —
-   technically possible but the performance gap is too large to bother.
-5. Those machines **can run cuQuantum**, so the portability objection that forces
-   Track 1 to be custom **does not apply here**. Therefore the distributed track
-   is **built on cuQuantum / cuTensorNet** (its distributed contraction + slicing +
-   multi-node engine), not a hand-rolled NCCL/MPI MPS layer.
-6. Capacity (lever B — exceeding single-card memory) is the **top priority** of
-   Track 2; intra-step distributed algebra (lever A) is worth doing on top of it
-   despite the Amdahl ceiling, to fully use the hardware.
+Track 2 shares **only the frontend / physics layer**: `models/`, `cumulants/`,
+`kernels/` (tensor *construction*) and observable *definitions*. It does **not**
+reuse `QuimbEDM` (Track 1's 1D-tagged TN for `tensor_network_1d_compress`); it has
+its **own assembler** that lays the same physics tensors out as the 2D network.
+That network may be carried as a quimb `TensorNetwork` so the contraction +
+truncation + parameter plumbing reuse quimb's API per decision 7.
 
-**Cross-cutting.**
-7. Ensemble throughput (lever C) is **trivial** — independent solves dispatched to
-   independent devices; a thin utility, works on either track, not a pillar.
-8. **Ozaki/ADP (FP64-TC emulation) is parked** — late-stage nice-to-have; native
-   A800 DMMA is still exercised for free by the Track-1 rSVD GEMMs.
+## Capacity wall (why Track 2 exists)
 
-The earlier draft's "portable identity-distribution layer" is **dropped**: Track 1
-never distributes, so there is no need to make a distribution layer degrade to a
-no-op on Win/Mac/CPU.
+Measured on the A800 with the bond **uncapped** (`docs/gpu-scaling-benchmark.md`):
+capacity is a **real, near-term hard wall**. Gaudin's Hamiltonian is
+time-independent ⇒ infinite memory time ⇒ the EDM bond **grows without bound with
+`T`** (191 → 643 from T3 → T6 at ξ=1e-8; asymptotically linear in `T`). Peak memory
+∝ `n_sites·χ²`, so a single 80 GB A800 **cannot run K=24 at T=9, ξ=1e-8 (OOM)** or
+T=6, ξ=1e-10. This is the **capacity milestone** for Phase C: that problem must
+complete across 4×A800. The 2D representation does not dodge the linear growth
+(it's physics); multi-GPU slicing is the capacity lever, the 2D global contraction
+is the precision lever.
 
-## 1. Where the parallelism is — and isn't (read this first)
+## Phase A — DONE (2026-06-28): install/interop de-risk + 2D assembler
 
-A single EDM solve has a **serial critical path** that no amount of GPUs removes:
+- **What was built.** `examples/track2_2d_assembler.py` builds the 2D network from
+  the shared physics layer as a backend-agnostic `(operands, integer-modes)` einsum
+  description, with NumPy and cuTensorNet backends behind one interface.
+  `examples/track2_cutensornet_sanity.py` + `cluster/track2_sanity.sbatch` run it on
+  c1.
+- **Network geometry (Gaudin / separable).** `(1 system row + K bath rows) × T`
+  columns: the system row threads the d²=4 `vec` bond (right end = `vec(ρ0)`, left
+  end = the free `vec(ρ(T))` output); each sub-bath row is a uniform chain of
+  transfer tensors with lateral bond `D_a`=4 (boundaries fixed to 0); the column
+  index (d_phys=7 superoperator leg) threads system → sub-bath 1 → … → sub-bath K
+  through the picking tensor (fused into each row's `op`), with the top arm closed
+  by δ⁰. Reducing all arms + contracting `vec(ρ0)` gives `vec(ρ(T))`.
+- **Install.** `cuquantum-python-cu12` **26.3.2** (cuTensorNet binding **2.12.2** /
+  21202) into the `edmtn-gpu` env on c1 (cupy 14.1.1, CUDA 12.9, A800-80GB).
+- **Validation.** The cuTensorNet one-shot contraction reproduces Track 1's exact
+  fold to **≤ 2.4e-15** across order 1/2, K=1–4, varying `n_steps`, and a sub-baths
+  subset (also validated locally with NumPy einsum first — geometry de-risked off
+  the cluster). Job 46486 on c1: PASS.
+- **cuQuantum 26.x API surface (for B/C/D).** High-level namespace is
+  `cuquantum.tensornet`: `contract`, `contract_path`, `einsum`, **`Network`**,
+  **`OptimizerOptions` / `PathFinderOptions` / `SlicerOptions` / `ReconfigOptions`**
+  (path + slicing control), **`experimental`** (approximate-TN / `contract_decompose`
+  for truncation), `tensor.decompose` (SVD/QR), **`get_mpi_comm_pointer`** (MPI
+  distributed). Low-level under `cuquantum.bindings.*`. NOTE: `cuquantum.cutensornet`
+  and top-level `cutensornet` are gone; `decompose` needs a `QRMethod`/`SVDMethod`
+  object, not the `"QR"` string; the **login node cannot `import cuquantum`** (no
+  CUDA libs) — test only under sbatch on c1.
 
-- the bath is folded sub-bath by sub-bath, `L = 1..K`, and fold `L+1` consumes
-  the compressed output of fold `L` → **sequential over L**;
-- inside a fold, left-canonicalisation and the truncation sweep walk the time
-  chain site by site, each site depending on the previous → **sequential over
-  sites**.
+## Phase B — single-GPU full 2D contraction into `src/` (next)
 
-So multi-GPU is **not** a "split the loop across GPUs" win. The real leverage is
-three-fold, in increasing implementation cost:
+The precision / global-optimization win. Promote the assembler into `src/` behind a
+Track-2 flag; cuTensorNet owns path + slicing + execution; one-shot whole-spacetime
+preferred with the manual time-window mode wired; truncation via cuTensorNet's
+approximate contraction with the unified `cutoff`/`cutoff_mode` knobs (decision 7),
+validated `<ξ` vs the Track 1 baseline.
 
-| lever | what it parallelises | when it pays | features used |
-|---|---|---|---|
-| **(C) Ensemble** | independent solves (disorder realisations, parameter/`g` sweeps, trajectories) | always, trivially | IB only for coordination |
-| **(A) Intra-step algebra** | the per-site SVD/QR/GEMM of *one* solve | large bond `χ` | NVLink (intra-node), IB+RDMA (multi-node) |
-| **(B) Capacity** | hold an MPS / working tensors too big for 80 GB | large `χ` *and/or* long chains | NVLink + IB RDMA |
+**B0 (verify first, on c1).** Settle how the network is driven through quimb so
+that **cuTensorNet — not cotengra — owns path-finding** (decision 2 vs 7): confirm
+whether quimb's contraction/compression with the cuTensorNet backend lets
+cuTensorNet's optimizer own the path, or whether quimb pulls in cotengra for path
+order. If the latter, expose cuTensorNet path ownership **directly** for that one
+knob (the CholQR-q precedent) and keep everything else through quimb. Also confirm
+the `cutoff`/`cutoff_mode` → cuTensorNet truncation mapping (does quimb's
+approximate-contraction cutoff convention thread to `contract_decompose`/the
+`experimental` MPS cutoff, or must a mode be mapped explicitly).
 
-**Amdahl caveat, stated honestly:** lever (A) speeds up each site's linear
-algebra but not the serial site/fold ordering, so a *single* solve's speedup
-saturates at the serial fraction. At today's scale (`χ ~ 100`s) multi-GPU is
-*counterproductive* (comm > compute); it only pays in the large-`χ` regime edmtn
-is built to reach. The P5a scaling curve (GPU lead growing with `χ`) is the
-empirical signpost for where that regime begins.
+## Phase C — single-node multi-GPU = cuTensorNet distributed slicing
 
-**Empirical confirmation (Phase-5 item 2, `docs/gpu-scaling-benchmark.md`).** Measured
-on the A800 with the bond **uncapped**: capacity (B) is a **real, near-term hard wall**,
-even for the Gaudin demonstrator. Gaudin's Hamiltonian is time-independent, so its
-memory time is infinite and the EDM bond **grows without bound with evolution time `T`**
-(191 → 643 from T3 → T6 at ξ=1e-8; linear in `T` asymptotically). Peak memory ∝
-`n_sites · χ²`, so a single 80 GB A800 **cannot run** K=24 at **T=9, ξ=1e-8** (OOM) or
-**T=6, ξ=1e-10** — an out-of-memory failure, not a slow run. (An earlier reading that
-"capacity is not the limiter" was an artefact of an artificial `max_bond=400` cap; the
-unbounded growth was hidden. Growth along the *fold index* `L` does plateau under the
-linearly-decreasing-`g` scheme — a separate axis.) **This concretely justifies the
-capacity priority: longer `T` / tighter ξ / larger `K` all bring the single-card wall
-closer, so multi-GPU then multi-node capacity (5.2 → 5.4) is needed to reach the
-long-evolution regime — exactly what edmtn targets.** Lever (A) intra-step wall-clock
-and (C) ensemble remain useful, but (B) capacity is the binding one here.
+cuTensorNet distributed (MPI rank/GPU on 4×A800, auto slice distribution over
+NVLink); launch via `sbatch` + MPI. **Capacity milestone:** K=24 / T=9 / ξ=1e-8
+(1-card OOM) completes across 4 cards at `<ξ`. On failure (slice/OOM/precision),
+the explicit error of decision 6 applies.
 
-## 2. Feature mapping
+## Phase D — cross-node interface stub (埋伏笔)
 
-### 2.1 FP64 Tensor Cores
-- **A800 (Ampere, cc 8.0):** native FP64 tensor cores (DMMA). cuBLAS dispatches
-  FP64 GEMM with `CUBLAS_COMPUTE_64F` to DMMA automatically — **exact FP64, no
-  precision loss**. This is available *now* and benefits exactly the rSVD GEMMs
-  (`M·Ω`, `Qᴴ·M`), not cuSOLVER SVD/QR. So **the more work the decomposition
-  layer shifts from full SVD to randomized SVD (P1), the more FP64-TC is
-  exercised** — the two improvements compound.
-- **Blackwell (RTX 5090 cc 12.0):** native FP64 throughput is gutted; the path is
-  the **Ozaki/ADP emulation** already seamed in `backend/ozaki_gemm.py` (CUDA 13,
-  splits FP64 into fixed-point slices on INT8 TCs, ADP picks slice count from the
-  condition number, ≥ native FP64 accuracy). Reported up to 13.2× DGEMM on RTX
-  PRO 6000 Blackwell. **Hardware-dependent mechanism**: A800 = DMMA, 5090 = Ozaki.
-- **Open caveat (from the plan):** **ZGEMM (complex128)** tensor-core support is
-  unverified — DMMA/Ozaki docs focus on DGEMM/SGEMM. The EDM matrices are complex.
-  Mitigation to test: process real/imag separately (3M or Karatsuba complex GEMM
-  built from real DGEMMs that *do* hit TCs), or verify cuBLAS ZGEMM DMMA dispatch
-  directly with nsight. **This must be measured, not assumed.**
+Feature-flagged, detect-only MPI/NCCL seam (`backend/process_group.py` or
+equivalent): single-node works; multi-node geometry detects-and-reports-unavailable
+("deferred — no test hardware"). Mirrors `OzakiGEMMBackend`. No multi-node
+execution.
 
-### 2.2 NVLink (intra-node GPU↔GPU)
-- A800 c1 topology (from recon): GPU0-1 NV4, others NV2 — high intra-node BW.
-- Used by lever (A): distributed rSVD exchanges partial sketch products via NCCL
-  all-reduce over NVLink; and lever (B): halo/boundary-tensor exchange when the
-  MPS chain or a large bond matrix is sharded across the 4 GPUs.
+## Hardware notes (kept)
 
-### 2.3 InfiniBand RDMA (inter-node)
-- Extends (B) to multi-node capacity (MPS chain segments on different nodes,
-  RDMA halo exchange during sweeps) and (C) ensemble scale-out across nodes.
-- cuTensorNet's distributed API rides MPI + UCX/RDMA for multi-node contraction.
+- **c1:** 2× AMD 7763 (256 threads), 512 GB RAM, **4× A800-SXM-80GB, NVLink**
+  (GPU0-1 NV4, others NV2). The Track 2 test node. CPU baselines on **a8/a9** (dual
+  EPYC 9754).
+- **FP64 Tensor Cores (parked):** A800 has native FP64 DMMA (exact, auto via
+  `CUBLAS_COMPUTE_64F`). **ZGEMM (complex128) TC dispatch is unverified** — the EDM
+  is complex; measure, don't assume. Ozaki/ADP FP64-TC emulation stays parked.
 
-### 2.4 cuTensorNet (cuQuantum) — the engine of the distributed track (Track 2)
-Per §0, distribution only ever runs on Linux-HPC GPUs, which have cuQuantum — so
-cuTensorNet is the **intended distributed engine**, not an optional add-on.
-- What it provides: **contraction path optimisation + slicing** (memory control)
-  and **distributed multi-GPU/multi-node contraction** (NVLink intra-node, IB+MPI
-  inter-node); recent cuQuantum also ships **MPS / approximate-TN state APIs**
-  (apply MPO + SVD-compress — structurally the EDM fold) and `tensorSVD`/`tensorQR`
-  primitives, so it can own both the contraction and the truncation at scale.
-- It is reached through the existing Layer-0 backend registry, so Track 1 is
-  completely unaffected when cuQuantum is absent.
-- Validation: its SVD accuracy controls, complex128 support, and EDM-MPS ↔
-  cuTensorNet layout interop must all reproduce the Track-1 StandardSVD reference
-  to `< ξ` before it is trusted at scale.
-- Open question (feasibility, not portability): if cuTensorNet's distributed
-  SVD-compression proves insufficient/inaccurate for the EDM fold, a *targeted*
-  custom GPU-distributed step (NCCL) may be needed as a supplement — but the
-  default intent is to let cuQuantum own distribution.
+## Risks / unknowns to verify in Track 2
 
-## 3. Integration architecture — two tracks behind one registry
+- **quimb ↔ cuTensorNet path ownership** (B0) — keep cotengra out per decision 2
+  while routing params through quimb per decision 7; resolve empirically.
+- **cutoff/cutoff_mode → cuTensorNet truncation** mapping for 2D approximate
+  contraction (B0).
+- **One-shot feasibility vs windowing** at the capacity target — the explicit-error
+  path (decision 6) is the contract when one-shot can't fit even after slicing.
+- **ZGEMM tensor-core dispatch** (complex128) — measure.
+- **cuTensorNet distributed** determinism / complex128 collectives at multi-GPU.
 
-The codebase already isolates linear algebra behind `DecompositionBackend`
-(registry) and arrays behind `ArrayFactory`. That seam is exactly what keeps the
-two tracks separate without forking the solver: the fold loop and decomposition
-*strategies* stay API-stable; the **backend** decides CPU / single-GPU / (on HPC)
-cuTensorNet-distributed.
+## Bottom line
 
-**Track 1 (portable, non-distributed) — already mostly here.** CPU (incl.
-multi-socket: MKL/OpenBLAS threads, as the P5a EPYC run uses) and single GPU
-(`RandomizedSVD` P1, CuPy backend). Nothing new architecturally; just keep it
-clean and vendor-neutral. This is the reference every Track-2 result is checked
-against.
-
-**Track 2 (Linux-HPC, GPU, distributed) — built on cuTensorNet.** The capacity
-driver (lever B): what blows past 80 GB first is the *whole time-chain*, not one
-bond's SVD matrix (`n_sites·d_phys·χ²·16 B`, e.g. 120×7×2000²×16 ≈ 54 GB, vs a
-single `(7χ × 4χ)` working matrix that still fits). cuTensorNet handles the
-distributed residency + contraction + slicing across GPUs/nodes; we express the
-fold (apply sub-bath MPO, compress) via its MPS / approximate-TN APIs and let its
-distributed engine place tensors over NVLink (intra-node) and IB+MPI (inter-node).
-
-New pieces:
-1. **`CuTensorNetBackend` (new, Layer 0 — Linux/CUDA only):** contraction +
-   `tensorSVD`/`tensorQR`, single- then multi-GPU, then multi-node via cuTensorNet's
-   distributed API. Selected through the registry; absent ⇒ Track 1 unaffected.
-2. **Fold ↔ cuTensorNet adapter (new):** map the EDM-MPS tensors + sub-bath MPO to
-   cuTensorNet network/state objects and back, preserving the gauge/index
-   conventions; this is where the interop validation (`< ξ`) lives.
-3. **(contingency) targeted custom NCCL step (lever A):** only if cuTensorNet's
-   distributed SVD-compression is insufficient — a sharded rSVD on the bond matrix
-   reusing P1's resolution-guard numerics. Not built unless measurement forces it.
-4. **Ozaki / mixed precision:** parked; native A800 DMMA serves Track-1 rSVD GEMMs.
-
-**Contract:** Track 1 must remain byte-for-byte the current pipeline (no cuQuantum
-import on Win/Mac/CPU). Track 2 must reproduce the Track-1 StandardSVD `⟨S_z(t)⟩`
-to `< ξ` (the project-wide bar) before it is trusted at scale.
-
-## 4. Proposed rollout (priority-ordered per §0)
-
-Track 1 is essentially done (CPU multi-socket + single-GPU rSVD). The work is
-Track 2, on Linux-HPC GPUs via cuTensorNet:
-
-- **5.0 — ensemble utility (lever C, trivial, either track).** A thin SLURM
-  job-array / driver for disorder-averaged Gaudin and parameter sweeps (independent
-  solves per device). Near-zero difficulty; ship early for throughput. Not the
-  architecture.
-- **5.1 — cuTensorNet feasibility spike (single GPU).** Stand up
-  `CuTensorNetBackend` + the fold↔cuTensorNet adapter on one A800; reproduce the
-  Track-1 StandardSVD result to `< ξ`. De-risks the interop + complex128 + SVD
-  accuracy questions before any distribution.
-- **5.2 — cuTensorNet intra-node multi-GPU for capacity (lever B, *the priority*).**
-  Use cuTensorNet's distributed engine over **NVLink** on c1's 4×A800 to hold +
-  process an MPS that exceeds one 80 GB card. This is the core deliverable —
-  ultra-large OQS starts here.
-- **5.3 — multi-node via cuTensorNet (lever B at scale, IB+MPI/RDMA).** Extend to
-  several nodes for problems beyond one node's 4×80 GB.
-- **5.4 — intra-step utilisation (lever A).** Lean on cuTensorNet's slicing /
-  contraction parallelism for the big per-bond work; add the contingency custom
-  NCCL rSVD step only if measurement shows cuTensorNet's SVD-compression is the
-  limiter.
-- **(parked) Ozaki/ADP FP64-TC emulation** — late-stage nice-to-have only.
-
-Each stage gated by the `< ξ` accuracy match against Track 1 + a scaling benchmark
-(extend `perf_gpu_compression.py`) showing it only switches on where it wins.
-
-## 5. Risks / unknowns to verify before committing code
-- **ZGEMM tensor-core dispatch** (complex128) on DMMA and Ozaki — measure; maybe
-  split real/imag.
-- **cuSOLVER SVD never uses TCs** → keep favouring rSVD (GEMM) over full SVD; lean
-  on cuTensorNet's SVD only after validating its accuracy/complex support.
-- **NCCL complex128 collectives** support; distributed SVD (cuSOLVERMp) maturity.
-- **Serial-fraction / Amdahl** of one solve — measure the sweep's serial cost vs
-  the per-site algebra to bound single-solve multi-GPU gains (sets when 5.2/5.3
-  pay). The §16 "streaming gauge" shortcut is dead (conditioning), so the serial
-  sweep stays.
-- **Distributed rSVD reproducibility** — per-rank sketch seeding / determinism.
-- **cuTensorNet ↔ EDM-MPS interop** — tensor layout, gauge conventions, dtype.
-
-## 6. Bottom line
-**Two tracks, separated by the existing backend registry.** Track 1 — the custom,
-portable, **non-distributed** pipeline (CPU incl. multi-socket, + single GPU) — is
-the vendor-neutral default for Windows/macOS/Linux and is essentially done. Track 2
-— **distribution for ultra-large-scale** — runs only on Linux-HPC GPUs, where
-cuQuantum is available, so it is **built on cuTensorNet** (its distributed
-contraction + slicing + multi-node engine) rather than a hand-rolled NCCL/MPI MPS
-layer; capacity (fitting an MPS bigger than one card) is its top job. The two never
-share a distribution layer. cuTensorNet is reached through the registry, so its
-absence leaves Track 1 untouched. Ensemble throughput is a trivial early utility;
-Ozaki/ADP is parked. Critical path for Track 2: cuTensorNet feasibility spike
-(single GPU, `< ξ`) → intra-node multi-GPU capacity over NVLink → multi-node over
-IB/MPI. Single-solve speedup is Amdahl-bounded by the serial sweep, but **capacity
-is not — and capacity is the point.**
+Track 2 = HPC-only, **2D space×time** EDM contracted **one-shot by cuTensorNet**
+(no cotengra; cuTensorNet owns path/slice/schedule/execute), parameters routed
+**through quimb**, failures **raised explicitly** (no silent guard; manual windowing
+is the user's call). Precision is the 2D lever; capacity is the multi-GPU lever
+(cuTensorNet distributed slicing, single-node first, cross-node a cheap stub).
+Phase A (install/interop + the 2D assembler) is **done and validated `≤2.4e-15`**
+against Track 1. Track 1 stays the untouched, portable, cuQuantum-free reference.
