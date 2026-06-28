@@ -1,55 +1,57 @@
 # edmtn
 
 Extended Density Matrix (EDM) tensor-network solver for non-Markovian open
-quantum systems, built on **quimb** + **CuPy**.
+quantum systems, built on the **quimb + cotengra + autoray** ecosystem (with
+optional **CuPy** GPU execution).
 
 It implements the polynomial-complexity EDM formalism of Chen & Liu,
 *Polynomial complexity of open quantum system problems* (arXiv:2509.00424): the
-reduced dynamics of a small system coupled to a quantum bath is represented by
-an extended-density-matrix matrix-product state whose bond dimension grows only
-linearly in evolution time, and is propagated by a combined-kernel MPO built
-from the bath cumulants.
+reduced dynamics of a small system coupled to a quantum bath is represented by an
+extended-density-matrix tensor network whose bond dimension grows only linearly in
+evolution time, propagated by a combined-kernel MPO built from the bath cumulants.
 
 ## Status
 
-**Phase 1 & 2 complete.** Both demonstrator models of the paper are solved
-end-to-end and validated against exact references:
+**Both demonstrator models solved end-to-end and validated** against exact
+references (machine precision uncompressed; `⟨S_z(t)⟩` reproduced under
+compression):
 
-- **Phase 1 — spin-boson** (a spin in a Gaussian bosonic bath): reproduces the
-  Fig. 4 dynamics.
-- **Phase 2 — Gaudin** (a central spin in `K` independent bath spins, a
-  *separable* non-Gaussian bath): the outer-loop recursion (Eq. 21) reproduces
-  the exact Trotterised reduced dynamics to machine precision and the Fig. 6
-  `⟨S_z⟩` / bond-dimension behaviour.
+- **spin-boson** — a spin in a Gaussian bosonic bath (single-bath forward
+  recursion).
+- **Gaudin** — a central spin in `K` independent bath spins, a *separable*
+  non-Gaussian bath (the Eq. 21 outer-loop recursion; `sub_baths` folds the first
+  `L` spins, Fig. 6).
 
-**Phase 3 — faster decomposition (in progress).** A GEMM-based, GPU-friendly
-`RandomizedSVD` compression strategy is implemented and validated against the full
-`StandardSVD` (`< ξ`, seed-stable) on both CPU and GPU. It is the GPU-fast path:
-on a single A800 it runs **7–15× faster than a 256-thread EPYC-9754 CPU**, the lead
-growing with bond dimension (see **Performance** below).
+**Re-platformed onto quimb (complete).** The compression pipeline is now a single
+ecosystem path: the EDM is carried as a quimb `TensorNetwork` and compressed via
+`tensor_network_1d_compress` (canonicalisation + truncation), dispatched through
+**autoray** so the *same code runs on NumPy and CuPy*. The previous hand-rolled
+"native" path (bespoke SVD/QR sweeps, `StandardSVD`/`RandomizedSVD`, the
+`s_i/s_{d²+1}` `rel_ref` cutoff) has been **retired** — see
+[docs/phase0-replatform-decisions.md](docs/phase0-replatform-decisions.md). Validated
+on CPU (full suite) and on a single A800 GPU (CPU↔GPU agreement ~1e-13).
 
-Implemented:
+**Next: cuQuantum + single-node multi-GPU** (cuTensorNet decomposition/contraction,
+then cotengra slicing across multiple GPUs — the capacity lever for long evolution).
+See [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+
+What's implemented:
 
 - spin-boson model (generalised Ohmic bath, zero temperature) and Gaudin model
   (linearly-decreasing couplings, infinite-temperature spin bath);
 - Gaussian second-order cumulants (closed-form Ohmic correlation + numeric
-  cross-check) **and** the separable bath-correlation transfer tensors (Eq. F1);
+  cross-check) **and** separable bath-correlation transfer tensors (Eq. F1);
 - combined-kernel MPO (Gaussian and separable), **first- and second-order**
   time-step expansion (second order on a doubled sub-step grid);
-- truncated-SVD compression with the paper's `s_i / s_{d^2+1}` cutoff rule;
+- **quimb-backed compression** — canonicalise + truncate in one call, with a
+  choice of method (`zipup`/`dm`/`direct`), per-bond decomposition (exact full SVD
+  or randomized SVD with a silent resolution guard), and canonicalisation QR;
 - MPS evolution engines: single-bath forward recursion **and** the separable
-  outer-loop over sub-baths (with `sub_baths` to fold the first `L` spins);
-- observable extraction: reduced density matrix, single-time expectations, and
-  the all-times coupling-channel polarization (Eq.-F2 / Eq.-F3 environment sweep);
+  outer-loop over sub-baths;
+- observable extraction: reduced density matrix, single-time expectations, and the
+  all-times coupling-channel polarization (Eq.-F2 / Eq.-F3 environment sweep);
 - a driver that wires the pipeline from `bath_type` and selects the compute
   backend, plus convergence helpers.
-
-**Compute backend.** The default is **CPU** (`backend='auto'`) — with full-SVD at
-small bond dimension the EDM hot path is many sequential medium SVD/QR calls, where
-the CPU is competitive. The full CuPy/GPU stack is built, validated and selectable
-(`backend='gpu'`); paired with `RandomizedSVD` it is the faster path and its lead
-**grows with problem size** (7× → 15× as the bond grows; see **Performance**). See
-[docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md).
 
 ## Layout
 
@@ -57,18 +59,22 @@ the CPU is competitive. The full CuPy/GPU stack is built, validated and selectab
 edmtn/
 ├── pyproject.toml              # package + pytest configuration
 ├── src/edmtn/                  # the package, organised by layer
-│   ├── backend/                # Layer 0: array + linalg backend abstraction (NumPy/CuPy)
-│   ├── models/                 # Layer 1: physical models (spin-boson)
-│   ├── cumulants/              # Layer 2: bath cumulant engines (Gaussian)
+│   ├── backend/                # Layer 0: array/linalg backend (NumPy/CuPy via autoray) + GPU compat shims
+│   ├── models/                 # Layer 1: physical models (spin-boson, Gaudin)
+│   ├── cumulants/              # Layer 2: bath cumulant engines (Gaussian, separable)
 │   ├── kernels/                # Layer 3: combined-kernel MPO construction
-│   ├── decomposition/          # Layer 4a: SVD compression strategies
-│   ├── expansion/              # Layer 4b: 1st/2nd-order time-step expansion
-│   ├── evolution/              # Layer 5: MPS evolution engine
+│   ├── expansion/              # Layer 4: 1st/2nd-order time-step expansion
+│   ├── evolution/              # Layer 5: quimb-backed evolution + compression
+│   │   ├── quimb_edm.py        #   QuimbEDM: the EDM carried as a quimb TensorNetwork
+│   │   ├── quimb_decomp.py     #   rSVD(q)+guard split driver + canonicalisation selector
+│   │   ├── separable_bath.py   #   Gaudin outer-loop fold engine
+│   │   ├── single_bath.py      #   spin-boson forward-recursion engine
+│   │   └── mps_utils.py        #   EDMMPS container, apply_step, dense brute-force reference
 │   ├── observables/            # Layer 6: observable extraction + convergence
-│   └── driver/                 # Layer 7: orchestration (EDMSolver)
-├── examples/                   # reproductions / studies (reproduce_fig4.py, reproduce_fig6.py)
+│   └── driver/                 # Layer 7: orchestration (EDMSolver, SolverConfig, presets)
+├── examples/                   # reproductions / studies (reproduce_fig4.py, reproduce_fig6.py, …)
 ├── tests/                      # unit / integration; benchmarks/ holds perf_*.py scripts
-└── docs/                       # development notes / environment gotchas
+└── docs/                       # design decisions, benchmarks, environment notes
 ```
 
 ## Quickstart
@@ -77,14 +83,14 @@ edmtn/
 from edmtn.driver import solve
 from edmtn.models import SpinBosonModel, GaudinModel
 
-# Phase 1 -- spin-boson (Gaussian bath)
+# spin-boson (Gaussian bath)
 sb = SpinBosonModel(J0=0.5, omega_c=5.0, mu=1.0)
-res = solve(sb, T=8.0, eps=0.02, expansion_order=2, cutoff=1e-6)
+res = solve(sb, T=8.0, eps=0.02, expansion_order=2, cutoff=1e-8)
 res.times, res.polarization, res.bond_dims   # mu*t, <S_z(t)>, bond dim per step
 
-# Phase 2 -- Gaudin (separable spin bath); channel 3 is <S_z>
+# Gaudin (separable spin bath); channel 3 is <S_z>
 g = GaudinModel(g=1.0, K=49)
-res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6,
+res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8,
             max_bond=400, channel=3)
 res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 ```
@@ -96,121 +102,95 @@ res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 | knob | values (default) | meaning |
 |---|---|---|
 | `expansion_order` | `1`, `2` (`1`) | Trotter order (2 = doubled sub-step grid) |
-| `cutoff` | float (`1e-6`) | SVD truncation `ξ` (rule `s_i / s_{d²+1} ≤ ξ`) |
+| `cutoff` | float (`1e-8`) | truncation threshold `ξ` |
+| `cutoff_mode` | `rel`, `rsum2`, `abs`, … (`rel`) | quimb truncation rule (`rel` = `s_i/s_max < ξ`; the built-in closest to the retired `rel_ref`) |
 | `max_bond` | int or `None` (`None`) | hard bond-dimension cap |
-| `backend` | `'auto'`, `'cpu'`, `'gpu'` (`'auto'`) | compute device (`auto` → CPU) |
-| `decomposition` | strategy (`StandardSVD()`) | **compression** (see below) |
-| `canonicalization` | strategy or `None` (`None` → Householder QR) | **canonicalisation** (see below) |
-| `preset` | `'balanced'`, `'robust'`, `None` (`None`) | fills recommended strategies (see below); explicit `decomposition`/`canonicalization` win |
+| `compress_method` | `zipup`, `dm`, `direct` (`zipup`) | quimb 1D-compress algorithm |
+| `compress_decomp` | `exact`, `rsvd` (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + silent guard) |
+| `compress_decomp_q` | int (`2`) | rSVD power iterations (`2` = cold/robust, `0` = single-pass/fast) |
+| `compress_canon` | `quimb`, `householder`, `cholqr` (`quimb`) | canonicalisation QR |
+| `preset` | `balanced`, `robust`, `None` (`None`) | fills the recommended decomposition (see below) |
 | `sub_baths` | int or `None` (`None`) | separable bath: fold only the first `L` sub-baths (Fig. 6) |
+| `backend` | `auto`, `cpu`, `gpu` (`auto`) | compute device (`auto` → CPU) |
 
 `solve(...).backend` reports the resolved device.
 
-**Backend.** `'auto'`/`'cpu'` runs on NumPy; `'gpu'` runs on CuPy (needs a matching
-CuPy wheel — see *Environment*; falls back to CPU with a note if no GPU). GPU pays off
-once the bond is large; small problems are CPU-competitive.
+**Compression.** Everything goes through quimb's `tensor_network_1d_compress`
+(canonicalise + truncate in one sweep), executed via autoray on whatever backend the
+arrays live on. `compress_method='zipup'` (default) is fast and low-memory;
+`direct` is the exact SVD sweep; `dm` is the density-matrix method (`eigh`-based,
+fastest but lower precision). `compress_decomp='rsvd'` swaps the per-bond full SVD for
+a randomized SVD whose power-iteration count is `compress_decomp_q` (`2` cold, `0`
+single-pass); a **silent resolution guard** falls back to exact full SVD when the
+randomized result is under-resolved, so it is never less reliable than full SVD.
 
-**Compression (`decomposition=`)** — import from `edmtn.decomposition`:
-
-```python
-from edmtn.decomposition import StandardSVD, RandomizedSVD
-
-StandardSVD()             # default: exact full SVD (the paper's baseline)
-RandomizedSVD(n_iter=0)   # single-pass rSVD: fastest, accuracy < ξ, GEMM/GPU-friendly
-RandomizedSVD(n_iter=2)   # cold rSVD: exact-baseline bonds, ~1e-12 accuracy
-```
-
-`RandomizedSVD` finds the rank adaptively (a spectral resolution guard), so it is reliable
-with no reference run; single-pass is the GPU-fast default, cold is for exact bonds.
-
-**Canonicalisation (`canonicalization=`)** — import from `edmtn.evolution`:
+**Presets** (details in [docs/recommended-config.md](docs/recommended-config.md)):
 
 ```python
-from edmtn.evolution import CholeskyQR        # HouseholderQR is the default (pass None)
-
-None                      # default: Householder QR — fastest on GPU and at tight ξ
-CholeskyQR(passes=2)      # BLAS-3 Cholesky-QR2; only wins on CPU at moderate ξ (niche)
-```
-
-Householder QR is conditioning-immune and the measured fastest in every regime except
-CPU-moderate-ξ; keep the default unless you are CPU-bound at `ξ ≳ 1e-6`.
-
-**Recommended presets** — the easy way is `preset=` (details + when-to-use in
-[docs/recommended-config.md](docs/recommended-config.md)):
-
-```python
-# preset='balanced' -> single-pass rSVD + Householder QR (fastest, accuracy < ξ)
-res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
+# preset='balanced' -> single-pass rSVD (q=0): fastest, accuracy < ξ
+res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8, max_bond=400,
             channel=3, backend='gpu', preset='balanced')
 
-# preset='robust'   -> cold rSVD + Householder QR (exact-baseline bonds, ~1e-12)
-res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-6, max_bond=400,
+# preset='robust'   -> cold rSVD (q=2): exact-baseline accuracy
+res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8, max_bond=400,
             channel=3, preset='robust')
 
-# no preset (default) -> StandardSVD + Householder QR: exact, deterministic.
+# no preset (default) -> exact full SVD, deterministic.
 ```
 
-`preset` only fills strategies you did not set explicitly (`decomposition=` /
-`canonicalization=` always win), and never overrides `backend`.
+A preset only fills `compress_decomp`/`compress_decomp_q` if you left them at the
+default; it never overrides `backend`.
 
-## Performance
+**Backend.** `auto`/`cpu` runs on NumPy; `gpu` runs on CuPy (needs a matching CuPy
+wheel — see *Environment*). GPU pays off once the bond is large; small problems are
+CPU-competitive. The compute is backend-agnostic (autoray), so results agree across
+devices to round-off.
 
-- **Recommended presets** (balanced vs robust, when to use which):
+## Performance & design notes
+
+- **Re-platform decision ledger** (what was replaced/retired and why):
+  [docs/phase0-replatform-decisions.md](docs/phase0-replatform-decisions.md).
+- **Recommended presets** (balanced vs robust):
   [docs/recommended-config.md](docs/recommended-config.md).
-- **GPU scaling** (single A800 vs 256-thread EPYC 9754; single-pass rSVD 7×→15×,
-  growing with bond): [docs/gpu-scaling-benchmark.md](docs/gpu-scaling-benchmark.md).
-- **Compression / decomposition study** (why single-pass rSVD is reliable, the
-  canonicalisation analysis): [docs/incremental-update-research.md](docs/incremental-update-research.md).
-- **Distributed scale-out plan** (multi-GPU + cuQuantum, two-track design):
+- **GPU scaling** (single A800 vs EPYC-9754):
+  [docs/gpu-scaling-benchmark.md](docs/gpu-scaling-benchmark.md).
+- **CPU vs GPU** trade-off: [docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md).
+- **Distributed scale-out** (multi-GPU + cuQuantum, two-track design):
   [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
 
 ## Environment
 
-Developed against the `quimb` conda env (Python 3.14, quimb 1.14, CuPy 14.1,
-CUDA 13.2, RTX 5090). CuPy/GPU is optional — the default execution path is CPU
-NumPy, the faster choice for the Phase-1/2 problem sizes (CPU vs GPU benchmarks
-and analysis in [docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md)).
+Developed against a `quimb` conda env (Python 3.14, quimb 1.14, autoray, cotengra,
+NumPy 2.4). CuPy/GPU is **optional** — the default path is CPU NumPy; CPU-only on
+Windows/macOS/Linux needs nothing extra.
 
 On a CUDA machine, add a CuPy wheel matching your CUDA toolkit to enable
-`backend='gpu'`, e.g. `pip install cupy-cuda12x` (CUDA 12.x) or `cupy-cuda13x`.
-CPU-only on Windows/macOS/Linux needs nothing extra.
+`backend='gpu'`, e.g. `pip install cupy-cuda12x` (CUDA 12.x). The GPU path applies
+two small compatibility shims for quimb-on-CuPy automatically
+(see [docs/quimb-cupy-namespace-bug.md](docs/quimb-cupy-namespace-bug.md)).
 
-The env requires `MKL_THREADING_LAYER=TBB` to be set **before NumPy is imported**
-(clashing OpenMP runtimes otherwise crash BLAS/LAPACK), configured at env level:
-
-```
-conda env config vars set MKL_THREADING_LAYER=TBB -n quimb
-```
-
-See `docs/mkl-tbb-threading-layer.md`.
+On some Windows quimb envs, set `MKL_THREADING_LAYER=TBB` before NumPy is imported
+to avoid an OpenMP-runtime clash (`conda env config vars set MKL_THREADING_LAYER=TBB
+-n quimb`); see [docs/mkl-tbb-threading-layer.md](docs/mkl-tbb-threading-layer.md).
 
 ## Running the tests
 
-With the `quimb` env activated (so the threading-layer variable is set):
-
 ```
 cd edmtn
-pytest                       # fast unit suite (integration deselected)
-pytest -m integration        # qualitative end-to-end checks (slower, O(N^2))
+PYTHONPATH=src python -m pytest -q       # fast unit suite (integration deselected)
+PYTHONPATH=src python -m pytest -m integration   # end-to-end checks (slower)
 ```
 
 `pyproject.toml` puts `src/` on the path via `[tool.pytest.ini_options].pythonpath`,
-so no install is required. For use outside pytest, either activate the env and
-add `src/` to `PYTHONPATH`, or `pip install -e .`.
+so no install is required; alternatively `pip install -e .`.
 
 ## Examples
 
 ```
-python examples/reproduce_fig4.py --quick      # spin-boson Fig. 4a/4b (Phase 1)
-python examples/reproduce_fig6.py --quick      # Gaudin Fig. 6a/6b   (Phase 2)
+python examples/reproduce_fig4.py --quick      # spin-boson Fig. 4a/4b
+python examples/reproduce_fig6.py --quick      # Gaudin Fig. 6a/6b
+python examples/retire_gpu_smoke.py            # GPU node: validate the pipeline on CuPy
 ```
 
-## Benchmarks
-
-Performance scripts live in `tests/benchmarks/`, named `perf_*.py` so pytest does
-not collect them; run them directly:
-
-```
-python tests/benchmarks/perf_cpu_gpu.py        # spin-boson: CPU vs GPU, fp32 vs fp64
-python tests/benchmarks/perf_gaudin.py --quick # Gaudin: CPU vs GPU across D_c
-```
+Performance scripts live in `tests/benchmarks/` (named `perf_*.py` so pytest does not
+collect them); run them directly.
