@@ -60,6 +60,21 @@ cuTensorNet.
    quimb. (Track 1 audited 2026-06-28: all knobs route through
    `tensor_network_1d_compress`; the only extension is the registered `edm_rsvd`
    driver — confirming the pattern.)
+8. **Two contraction modes — exact (kept, no-knob) and approximate (knobs).**
+   cuTensorNet provides a **native, pre-built exact** one-shot contraction
+   (`Network.contract()`: slicing manages memory only, **no truncation**) that costs
+   us no hand-rolling — so Track 2 **keeps an `exact` mode** (this revises the earlier
+   "no separate exact mode" stance, which assumed exact would need hand-rolling).
+   `exact` exposes **no truncation knob**; instead it **reports one or more reference
+   error metrics** (candidates: hermiticity ‖ρ−ρ†‖, trace |Tr ρ−1|, and/or vs the
+   Track 1 baseline — settle in B1). The contrasting **`approximate` mode** carries
+   the truncation knobs (`cutoff`/`cutoff_mode`/`max_bond`) under the **original
+   Track-1 rules**, routed through quimb (decision 7); its mechanism (one-shot
+   approximate via cuTensorNet `experimental`, vs windowed) is the B0 question.
+   **Terminology caution:** Track 2 `exact` = **genuinely no truncation**, whereas
+   Track 1's `compress_decomp="exact"` = **full-SVD decomposition that still truncates
+   via the cutoff knobs**. Different meanings — B1 picks unambiguous names so the two
+   don't collide.
 
 ## Shared seam with Track 1
 
