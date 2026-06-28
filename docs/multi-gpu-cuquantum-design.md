@@ -16,12 +16,15 @@ cuTensorNet.
 
 1. **Forced binding: NVIDIA GPU + cuQuantum (cuTensorNet) + 2D network.** Not
    configurable; never imported on the Track-1 (CPU/Win/Mac) path.
-2. **cotengra excluded; cuTensorNet owns the pipeline** — contraction-path search,
-   slicing, hardware scheduling / device & memory management, execution. Rationale:
-   one data structure end-to-end + cuTensorNet's optimizer is hardware-aware
-   (co-optimizes path + slice count against device memory / NVLink). Escape hatch
-   (API-level only): feed a precomputed path to cuTensorNet's *executor* if its
-   optimizer underperforms on our 2D net.
+2. **cuTensorNet is the default path-finder + executor, selected *through quimb*;
+   cotengra is retained as an optional fallback.** cuQuantum plugs into the
+   quimb/autoray ecosystem like numpy/cupy (autoray-dispatched), and quimb chooses
+   who owns contraction-path search via its `optimize=` / backend mechanism. Default:
+   cuTensorNet owns path search + slicing + hardware scheduling / device & memory
+   management + execution (hardware-aware — co-optimizes path + slice count against
+   device memory / NVLink). **cotengra stays selectable as a fallback** (not
+   excluded). Reach this through quimb; bypass quimb only as a genuine last resort
+   (万不得已) — see decision 7.
 3. **2D network, one-shot whole-spacetime preferred.** Slicing + scheduling +
    resource management are cuTensorNet's job — the one-shot whole-spacetime network
    is exactly what it should slice/schedule. A **manual time-window blocking /
@@ -43,11 +46,16 @@ cuTensorNet.
    decision to them. There is **no automatic fallback** from one-shot to windowed,
    and **no silent acceptance** of worse-than-requested precision.
 7. **Parameters flow through quimb.** `cutoff` / `cutoff_mode` / `max_bond` and the
-   other knobs are passed via **quimb's existing unified API**, which dispatches to
-   the cuQuantum/cuTensorNet backend (quimb already supports it). A parameter is
-   passed **directly** to cuTensorNet (optionally bypassing quimb) **only** when, as
-   with Track 1's CholQR2 `q`, quimb does not expose an otherwise-hidden knob we
-   need. Default = through quimb; direct = the documented exception.
+   other knobs go through **quimb's unified API**, which dispatches to the
+   cuQuantum/cuTensorNet backend (quimb already supports it). To reach an
+   otherwise-hidden knob, **extend quimb through its public hooks** — exactly as
+   Track 1 exposes the rSVD power-iteration `q` by registering the `edm_rsvd` split
+   driver via `decomp.register_split_driver` (using quimb's own `rand_linalg.rsvd`),
+   not by going around quimb. **Bypassing quimb entirely is a genuine last resort
+   (万不得已)**, only when no quimb-routed or hook-based path exists. Default = through
+   quimb. (Track 1 audited 2026-06-28: all knobs route through
+   `tensor_network_1d_compress`; the only extension is the registered `edm_rsvd`
+   driver — confirming the pattern.)
 
 ## Shared seam with Track 1
 
@@ -108,15 +116,14 @@ preferred with the manual time-window mode wired; truncation via cuTensorNet's
 approximate contraction with the unified `cutoff`/`cutoff_mode` knobs (decision 7),
 validated `<ξ` vs the Track 1 baseline.
 
-**B0 (verify first, on c1).** Settle how the network is driven through quimb so
-that **cuTensorNet — not cotengra — owns path-finding** (decision 2 vs 7): confirm
-whether quimb's contraction/compression with the cuTensorNet backend lets
-cuTensorNet's optimizer own the path, or whether quimb pulls in cotengra for path
-order. If the latter, expose cuTensorNet path ownership **directly** for that one
-knob (the CholQR-q precedent) and keep everything else through quimb. Also confirm
-the `cutoff`/`cutoff_mode` → cuTensorNet truncation mapping (does quimb's
-approximate-contraction cutoff convention thread to `contract_decompose`/the
-`experimental` MPS cutoff, or must a mode be mapped explicitly).
+**B0 (verify first, on c1).** Confirm quimb's mechanism to **select the path-finder**
+(its `optimize=` argument / a cuQuantum optimizer object) so that **cuTensorNet owns
+path search by default with cotengra still selectable as fallback** (decision 2) —
+all **through quimb** (decision 7), using quimb's public extension hooks if a knob is
+hidden (the `edm_rsvd`/`register_split_driver` precedent), and bypassing quimb only
+as a last resort. Also confirm the `cutoff`/`cutoff_mode` → cuTensorNet truncation
+mapping (does quimb's approximate-contraction cutoff thread to
+`experimental`/`contract_decompose`, or must a mode be mapped explicitly).
 
 ## Phase C — single-node multi-GPU = cuTensorNet distributed slicing
 
@@ -143,8 +150,9 @@ execution.
 
 ## Risks / unknowns to verify in Track 2
 
-- **quimb ↔ cuTensorNet path ownership** (B0) — keep cotengra out per decision 2
-  while routing params through quimb per decision 7; resolve empirically.
+- **quimb ↔ cuTensorNet path ownership** (B0) — make cuTensorNet the default
+  path-finder via quimb's `optimize=` (cotengra selectable fallback, decision 2),
+  params through quimb (decision 7); resolve empirically.
 - **cutoff/cutoff_mode → cuTensorNet truncation** mapping for 2D approximate
   contraction (B0).
 - **One-shot feasibility vs windowing** at the capacity target — the explicit-error
@@ -155,9 +163,10 @@ execution.
 ## Bottom line
 
 Track 2 = HPC-only, **2D space×time** EDM contracted **one-shot by cuTensorNet**
-(no cotengra; cuTensorNet owns path/slice/schedule/execute), parameters routed
-**through quimb**, failures **raised explicitly** (no silent guard; manual windowing
-is the user's call). Precision is the 2D lever; capacity is the multi-GPU lever
+(cuTensorNet is the default path/slice/schedule/execute owner, selected through
+quimb; cotengra kept as an optional fallback), parameters routed **through quimb**
+(bypass only 万不得已), failures **raised explicitly** (no silent guard; manual
+windowing is the user's call). Precision is the 2D lever; capacity is the multi-GPU lever
 (cuTensorNet distributed slicing, single-node first, cross-node a cheap stub).
 Phase A (install/interop + the 2D assembler) is **done and validated `≤2.4e-15`**
 against Track 1. Track 1 stays the untouched, portable, cuQuantum-free reference.
