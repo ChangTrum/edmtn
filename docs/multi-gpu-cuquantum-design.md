@@ -22,9 +22,13 @@ cuTensorNet.
    who owns contraction-path search via its `optimize=` / backend mechanism. Default:
    cuTensorNet owns path search + slicing + hardware scheduling / device & memory
    management + execution (hardware-aware — co-optimizes path + slice count against
-   device memory / NVLink). **cotengra stays selectable as a fallback** (not
-   excluded). Reach this through quimb; bypass quimb only as a genuine last resort
-   (万不得已) — see decision 7.
+   device memory / NVLink). The **default path-finder is cuTensorNet's own
+   optimizer**, reached *through cotengra* (stack quimb→cotengra→cuQuantum; cotengra
+   `implementation="cuquantum"` → `cuquantum.tensornet.Network`, no path pre-supplied
+   so cuTensorNet optimizes). **cotengra's own pathfinder is a non-default optional
+   fallback** (supply cotengra's tree/path to the `Network`). cotengra is the
+   conduit either way — not excluded. Bypass quimb/cotengra only as a genuine last
+   resort (万不得已) — see decision 7.
 3. **2D network, one-shot whole-spacetime preferred.** Slicing + scheduling +
    resource management are cuTensorNet's job — the one-shot whole-spacetime network
    is exactly what it should slice/schedule. A **manual time-window blocking /
