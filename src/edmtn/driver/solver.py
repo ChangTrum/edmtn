@@ -202,6 +202,9 @@ class EDMSolver:
 
         out = solve_cutensornet(self.model, self.config, channel=channel,
                                 executor="cuquantum")
+        label = f"hpc/{out['mode']}/{out['pathfinder']}"
+        if out.get("ngpu", 1) > 1:
+            label += f"/{out['ngpu']}gpu"
         return SolverResult(
             times=out["times"],
             polarization=out["polarization"],
@@ -210,7 +213,7 @@ class EDMSolver:
             observables={},
             mps=None,
             evolution=None,
-            backend=f"hpc/{out['mode']}/{out['pathfinder']}",
+            backend=label,
             density_matrices=out["density_matrices"],
             error_metrics=out["error_metrics"],
         )

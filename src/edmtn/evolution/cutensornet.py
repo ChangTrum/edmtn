@@ -175,14 +175,112 @@ def _contract_exact_numpy(operands, modes, out_modes):
     return oe.contract(*args, optimize="auto"), None
 
 
-def _contract_exact_cuquantum(operands, modes, out_modes, *, pathfinder):
+# --------------------------------------------------------------------------
+# multi-GPU (cuTensorNet distributed = one MPI rank per GPU, the only multi-GPU model)
+# --------------------------------------------------------------------------
+
+def _mpi_context():
+    """Return ``(comm, rank, size)`` if launched multi-rank under MPI, else ``None``.
+
+    Detected from the launcher's env (PMI/SLURM/OMPI) so a normal single-process
+    call never imports mpi4py or initializes MPI. cuTensorNet's only multi-GPU mode
+    is one rank per GPU; launch e.g. ``srun --mpi=pmi2 --ntasks=4 python script.py``.
+    """
+    import os  # noqa: PLC0415
+    n = 1
+    for v in ("OMPI_COMM_WORLD_SIZE", "PMI_SIZE", "SLURM_NTASKS", "MPI_LOCALNRANKS"):
+        try:
+            n = max(n, int(os.environ.get(v, "1")))
+        except ValueError:
+            pass
+    if n <= 1:
+        return None
+    from mpi4py import MPI  # noqa: PLC0415 - importing initializes MPI
+    comm = MPI.COMM_WORLD
+    return comm, comm.Get_rank(), comm.Get_size()
+
+
+def _resolve_comm_lib() -> str:
+    """Resolve + set ``CUTENSORNET_COMM_LIB`` (cuTensorNet's MPI wrapper) across the
+    different install layouts; never silently fail (decision: explicit errors).
+
+    Order: an existing valid env var → a prebuilt ``.so`` beside cuquantum's
+    ``distributed_interfaces`` (conda-forge ships it) → else a clear build-it error
+    (pip wheels ship only the ``.c`` source).
+    """
+    import os  # noqa: PLC0415
+    import os.path as osp  # noqa: PLC0415
+
+    p = os.environ.get("CUTENSORNET_COMM_LIB")
+    if p and osp.isfile(p):
+        return p
+    import cuquantum  # noqa: PLC0415
+    di = osp.join(osp.dirname(cuquantum.__file__), "distributed_interfaces")
+    prebuilt = osp.join(di, "libcutensornet_distributed_interface_mpi.so")
+    if osp.isfile(prebuilt):
+        os.environ["CUTENSORNET_COMM_LIB"] = prebuilt
+        return prebuilt
+    src = osp.join(di, "cutensornet_distributed_interface_mpi.c")
+    inc = osp.join(osp.dirname(cuquantum.__file__), "include")
+    raise CuTensorNetContractionError(
+        "multi-GPU needs the cuTensorNet MPI wrapper, but CUTENSORNET_COMM_LIB is "
+        f"unset and no prebuilt library was found in {di}.\nconda-forge cuquantum "
+        "ships it prebuilt; with the pip wheel, build it once:\n"
+        f"  mpicc -shared -std=c99 -fPIC -I<CUDA>/include -I{inc} \\\n"
+        f"    {src} -o {prebuilt}\nthen `export CUTENSORNET_COMM_LIB=<that .so>` "
+        "(and on MPICH also `export LD_PRELOAD=<mpi>/libmpi.so`).")
+
+
+def _make_dist(mpi_ctx):
+    """Bind a distributed cuTensorNet handle to the MPI communicator (one GPU/rank).
+
+    Returns ``{comm, rank, size, handle, device_id}`` or ``None`` for single-GPU.
+    """
+    if mpi_ctx is None:
+        return None
+    comm, rank, size = mpi_ctx
+    _resolve_comm_lib()  # sets CUTENSORNET_COMM_LIB or raises with build instructions
+    import cupy as cp  # noqa: PLC0415
+    from cupy.cuda.runtime import getDeviceCount  # noqa: PLC0415
+    from cuquantum.bindings import cutensornet as cutn  # noqa: PLC0415
+    from cuquantum.tensornet import get_mpi_comm_pointer  # noqa: PLC0415
+
+    device_id = rank % getDeviceCount()
+    cp.cuda.Device(device_id).use()
+    handle = cutn.create()
+    cutn.distributed_reset_configuration(handle, *get_mpi_comm_pointer(comm))
+    return {"comm": comm, "rank": rank, "size": size, "handle": handle,
+            "device_id": device_id}
+
+
+def _contract_exact_cuquantum(operands, modes, out_modes, *, pathfinder, dist=None):
     """Exact one-shot on GPU. ``pathfinder='cuquantum'`` lets cuTensorNet own the
     whole-network path + slicing; ``'cotengra'`` uses cotengra's path with cuQuantum
-    as the executor (no whole-network slicing)."""
+    as the executor (no whole-network slicing). With ``dist`` set, cuTensorNet
+    distributes the slices across the MPI ranks (one GPU each)."""
     import cupy as cp  # noqa: PLC0415
 
+    if dist is not None:
+        cp.cuda.Device(dist["device_id"]).use()
     gpu_ops = [cp.asarray(o) for o in operands]
     out_ix = out_modes[0]
+
+    if dist is not None:
+        # multi-GPU: cuTensorNet owns the distributed path + slicing across ranks
+        if pathfinder != "cuquantum":
+            raise CuTensorNetContractionError(
+                "multi-GPU distributed contraction requires pathfinder='cuquantum' "
+                "(cuTensorNet owns the distributed path); cotengra is single-GPU only.")
+        from cuquantum.tensornet import contract  # noqa: PLC0415
+        opts = {"device_id": dist["device_id"], "handle": dist["handle"]}
+        info = None
+        try:
+            res, info = contract(*_interleaved(gpu_ops, modes, out_modes),
+                                 options=opts, return_info=True)
+        except TypeError:
+            res = contract(*_interleaved(gpu_ops, modes, out_modes), options=opts)
+        return cp.asnumpy(res), info
+
     if pathfinder == "cuquantum":
         from cuquantum.tensornet import contract  # noqa: PLC0415
         info = None
@@ -235,8 +333,12 @@ def _contract_approx_cuquantum(operands, modes, out_modes, *, max_bond, cutoff,
 
 
 def reduced_density_matrix(model, expander, eps, n_steps, *, mode, pathfinder,
-                           max_bond, cutoff, cutoff_mode, sub_baths, executor):
-    """Assemble + contract the 2D net once → ``(rho, metrics)`` at time ``n_steps``."""
+                           max_bond, cutoff, cutoff_mode, sub_baths, executor, dist=None):
+    """Assemble + contract the 2D net once → ``(rho, metrics)`` at time ``n_steps``.
+
+    ``dist`` (set only for multi-GPU exact runs) distributes the contraction across
+    the MPI ranks via cuTensorNet.
+    """
     operands, modes, out_modes, meta = build_2d_network(
         model, expander, eps, n_steps, sub_baths=sub_baths)
     d = meta["d"]
@@ -245,7 +347,7 @@ def reduced_density_matrix(model, expander, eps, n_steps, *, mode, pathfinder,
             vec, info = _contract_exact_numpy(operands, modes, out_modes)
         else:
             vec, info = _contract_exact_cuquantum(operands, modes, out_modes,
-                                                  pathfinder=pathfinder)
+                                                  pathfinder=pathfinder, dist=dist)
         rho = np.asarray(vec).reshape(d, d)
         return rho, error_metrics(rho, optimizer_info=info)
     if mode == "approx":
@@ -294,16 +396,33 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
     pathfinder = getattr(config, "pathfinder", "cuquantum")
     N = config.n_steps
 
-    rhos = []
-    metrics_last = None
-    for m in range(1, N + 1):
-        rho, metrics = reduced_density_matrix(
-            model, expander, config.eps, m, mode=mode, pathfinder=pathfinder,
-            max_bond=config.max_bond, cutoff=config.cutoff,
-            cutoff_mode=config.cutoff_mode, sub_baths=config.sub_baths,
-            executor=executor)
-        rhos.append(rho)
-        metrics_last = metrics
+    # multi-GPU: cuTensorNet distributes the EXACT contraction across MPI ranks
+    # (one GPU each), auto-detected from the launcher; None for a single process.
+    dist = None
+    mpi_ctx = _mpi_context() if executor != "numpy" else None
+    if mpi_ctx is not None:
+        if mode != "exact":
+            raise NotImplementedError(
+                "multi-GPU is currently only for compress_decomp='exact' (cuTensorNet "
+                "distributed contraction); 'approx' (quimb contract_compressed) is "
+                "single-GPU — run exact, or launch a single process.")
+        dist = _make_dist(mpi_ctx)
+
+    try:
+        rhos = []
+        metrics_last = None
+        for m in range(1, N + 1):
+            rho, metrics = reduced_density_matrix(
+                model, expander, config.eps, m, mode=mode, pathfinder=pathfinder,
+                max_bond=config.max_bond, cutoff=config.cutoff,
+                cutoff_mode=config.cutoff_mode, sub_baths=config.sub_baths,
+                executor=executor, dist=dist)
+            rhos.append(rho)
+            metrics_last = metrics
+    finally:
+        if dist is not None:
+            from cuquantum.bindings import cutensornet as cutn  # noqa: PLC0415
+            cutn.destroy(dist["handle"])
 
     times = config.eps * np.arange(1, N + 1)
     pol = None
@@ -313,6 +432,8 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
     return dict(
         times=times, density_matrices=rhos, final_rho=rhos[-1],
         polarization=pol, error_metrics=metrics_last, mode=mode, pathfinder=pathfinder,
+        ngpu=(dist["size"] if dist is not None else 1),
+        rank=(dist["rank"] if dist is not None else 0),
     )
 
 
