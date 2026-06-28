@@ -32,10 +32,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..decomposition.standard_svd import StandardSVD
 from ..expansion.second_order import SecondOrderExpander
-from . import mps_utils
-from .mps_utils import EDMMPS, _xp
+from .mps_utils import EDMMPS
 
 
 @dataclass
@@ -74,24 +72,17 @@ class SeparableBathEvolution:
     expander : TimeStepExpander, optional
         Time-step expansion (default :class:`SecondOrderExpander`, matching the
         paper's Gaudin calculation).
-    decomposition : DecompositionStrategy, optional
-        Compression strategy (default :class:`StandardSVD`).
+    compress_method, compress_decomp, compress_decomp_q, compress_canon :
+        quimb compression controls (see :mod:`edmtn.evolution.quimb_decomp`).
     """
 
-    def __init__(self, expander=None, decomposition=None, canonicalization=None,
-                 compression="native", compress_cutoff=1e-12,
-                 compress_cutoff_mode="rel", compress_method="zipup",
+    def __init__(self, expander=None, *, compress_method="zipup",
                  compress_decomp="exact", compress_decomp_q=2, compress_canon="quimb"):
         self.expander = expander if expander is not None else SecondOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(f"unsupported expansion order {self.expander.order}")
-        self.decomposition = decomposition if decomposition is not None else StandardSVD()
-        self.canonicalization = canonicalization  # None -> Householder QR
-        self.compression = compression  # 'native' | 'quimb'
-        self.compress_cutoff = compress_cutoff
-        self.compress_cutoff_mode = compress_cutoff_mode
-        self.compress_method = compress_method
-        self.compress_decomp = compress_decomp        # 'exact' | 'rsvd' (quimb path)
+        self.compress_method = compress_method         # quimb 1D-compress: 'zipup'|'dm'|'direct'
+        self.compress_decomp = compress_decomp         # 'exact' | 'rsvd'
         self.compress_decomp_q = compress_decomp_q     # rsvd power iterations
         self.compress_canon = compress_canon           # 'quimb' | 'householder' | 'cholqr'
 
@@ -104,8 +95,7 @@ class SeparableBathEvolution:
         *,
         max_bond: int | None = None,
         cutoff: float = 0.0,
-        cutoff_mode: str = "rel_ref",
-        ref_index: int | None = None,
+        cutoff_mode: str = "rel",
         record_rho: bool = False,
         record_every: int = 1,
         compress: bool = True,
@@ -149,8 +139,6 @@ class SeparableBathEvolution:
             the O(K) outer loop does not accumulate VRAM (Sec. 8.4).  No-op on CPU.
         """
         d = model.system_dim
-        if ref_index is None:
-            ref_index = d * d
         if convert is None:
             convert = lambda a: a  # noqa: E731
         order = self.expander.order
@@ -163,16 +151,12 @@ class SeparableBathEvolution:
 
         rho0_vec = convert(model.initial_system_state().reshape(-1).astype(np.complex128))
 
-        # rho_0 = S^Phi rho(0): pure system evolution MPS (bond dim d**2)
-        mps = self._build_system_mps(model, eps, n_steps, order, d, d_phys, rho0_vec, convert)
+        # rho_0 = S^Phi rho(0): pure system evolution MPS (bond dim d**2), carried
+        # as a quimb TensorNetwork through the fold loop.
+        from .quimb_edm import QuimbEDM  # noqa: PLC0415
 
-        # 'quimb' carries the EDM as a quimb TensorNetwork through the fold loop
-        # (the structural re-platform); 'native' keeps the bespoke EDMMPS path.
-        use_quimb = self.compression == "quimb"
-        if use_quimb:
-            from .quimb_edm import QuimbEDM  # noqa: PLC0415
-
-            mps = QuimbEDM.from_edmmps(mps)
+        mps = QuimbEDM.from_edmmps(
+            self._build_system_mps(model, eps, n_steps, order, d, d_phys, rho0_vec, convert))
 
         result = SeparableEvolutionResult(mps=None, n_sub_baths=n_fold)
         if record_rho:
@@ -182,37 +166,17 @@ class SeparableBathEvolution:
             mpo_sites = [
                 convert(s) for s in kernel_engine.for_sub_bath(k).get_kernel_mpo(n_sites).site_tensors
             ]
-            err = 0.0
-            if use_quimb:
-                # exact fold (compress=False) is reproduced by a zero cutoff
-                mps = mps.fold(
-                    mpo_sites,
-                    cutoff=self.compress_cutoff if compress else 0.0,
-                    cutoff_mode=self.compress_cutoff_mode,
-                    method=self.compress_method,
-                    max_bond=max_bond if compress else None,
-                    decomp=self.compress_decomp,
-                    decomp_q=self.compress_decomp_q,
-                    canon=self.compress_canon,
-                )
-            else:
-                mps = self._apply_sub_bath(mps, mpo_sites, d, d_phys, rho0_vec)
-                if compress and mps.num_sites > 1:
-                    mps, infos = mps_utils.compress(
-                        mps,
-                        strategy=self.decomposition,
-                        canon=self.canonicalization,
-                        engine=self.compression,
-                        compress_cutoff=self.compress_cutoff,
-                        compress_cutoff_mode=self.compress_cutoff_mode,
-                        compress_method=self.compress_method,
-                        max_bond=max_bond,
-                        cutoff=cutoff,
-                        cutoff_mode=cutoff_mode,
-                        ref_index=ref_index,
-                    )
-                    if infos:
-                        err = max(info["error"] for info in infos)
+            # exact fold (compress=False) is reproduced by a zero cutoff
+            mps = mps.fold(
+                mpo_sites,
+                cutoff=cutoff if compress else 0.0,
+                cutoff_mode=cutoff_mode,
+                method=self.compress_method,
+                max_bond=max_bond if compress else None,
+                decomp=self.compress_decomp,
+                decomp_q=self.compress_decomp_q,
+                canon=self.compress_canon,
+            )
 
             # release the previous sub-bath's GPU intermediates (no-op on CPU)
             if memory is not None:
@@ -222,13 +186,12 @@ class SeparableBathEvolution:
             if L == n_fold or (L % record_every == 0):
                 result.recorded_L.append(L)
                 result.bond_dims.append(mps.max_bond)
-                result.truncation_errors.append(float(err))
+                result.truncation_errors.append(0.0)
                 if record_rho:
                     result.density_matrices.append(mps.reduced_density_matrix())
 
-        # hand back a plain EDMMPS so observable extraction (which reads per-site
-        # tensors) is identical regardless of the carried container
-        result.mps = mps.to_edmmps() if use_quimb else mps
+        # hand back a plain EDMMPS so observable extraction reads per-site tensors
+        result.mps = mps.to_edmmps()
         return result
 
     # -- construction ------------------------------------------------------
@@ -252,22 +215,3 @@ class SeparableBathEvolution:
             S = fam_cache[n][sub]           # (d_phys, d**2, d**2)
             tensors.append(convert(np.asarray(S, dtype=np.complex128)))
         return EDMMPS(tensors=tensors, d=d, d_phys=d_phys, rho0_vec=rho0_vec)
-
-    @staticmethod
-    def _apply_sub_bath(mps, mpo_sites, d, d_phys, rho0_vec) -> EDMMPS:
-        """Contract a sub-bath's combined-kernel MPO with the EDM along time.
-
-        ``new[phi_up, (a_l, chi_l), (a_r, chi_r)] = sum_{phi_down}
-        T[phi_up, phi_down, a_l, a_r] G[phi_down, chi_l, chi_r]``, fusing the
-        lateral kernel bond (outer) with the existing MPS bond (inner).
-        """
-        xp = _xp(mpo_sites[0])
-        new_tensors = []
-        for p in range(mps.num_sites):
-            T = mpo_sites[p]            # (phi_up, phi_down, a_l, a_r)
-            G = mps.tensors[p]          # (phi_down, chi_l, chi_r)
-            out = xp.tensordot(T, G, axes=([1], [0]))  # (phi_up, a_l, a_r, chi_l, chi_r)
-            out = xp.transpose(out, (0, 1, 3, 2, 4))   # (phi_up, a_l, chi_l, a_r, chi_r)
-            u, al, cl, ar, cr = out.shape
-            new_tensors.append(out.reshape(u, al * cl, ar * cr))
-        return EDMMPS(tensors=new_tensors, d=d, d_phys=d_phys, rho0_vec=rho0_vec)

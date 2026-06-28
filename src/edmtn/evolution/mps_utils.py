@@ -37,8 +37,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..decomposition.standard_svd import StandardSVD
-
 
 def _xp(a):
     """Return the array module (``numpy`` or ``cupy``) backing ``a``."""
@@ -187,94 +185,6 @@ def apply_step(mps, kernel_sites, sfamily, d, rho0_vec):
             new_tensors.append(out.reshape(d_phys, al * bl, ar * br))
 
     return EDMMPS(tensors=new_tensors, d=d, d_phys=d_phys, rho0_vec=rho0_vec)
-
-
-# --------------------------------------------------------------------------
-# compression (canonicalisation + truncation sweep)
-# --------------------------------------------------------------------------
-
-def left_canonicalize(mps, canon=None):
-    """Left-canonicalise sites ``0 .. n-2``, leaving site ``n-1`` as centre.
-
-    ``canon`` selects a :class:`~edmtn.evolution.canonicalize.CanonicalizationStrategy`
-    (e.g. ``CholeskyQR``); ``None`` (default) is the historical Householder QR sweep,
-    kept byte-for-byte.
-    """
-    if canon is not None:
-        return canon.left_canonicalize(mps)
-    xp = _xp(mps.tensors[0])
-    n = mps.num_sites
-    for p in range(n - 1):
-        G = mps.tensors[p]
-        dp, chil, chir = G.shape
-        Q, R = xp.linalg.qr(G.reshape(dp * chil, chir))
-        k = Q.shape[1]
-        mps.tensors[p] = Q.reshape(dp, chil, k)
-        nxt = mps.tensors[p + 1]  # (dp, chil = chir, chir2)
-        # R[r,c] . nxt[p,c,x] -> [p,r,x]
-        mps.tensors[p + 1] = xp.transpose(xp.tensordot(R, nxt, axes=([1], [1])), (1, 0, 2))
-    return mps
-
-
-def truncate(mps, strategy=None, *, max_bond=None, cutoff=0.0,
-             cutoff_mode="rel_ref", ref_index=None):
-    """Right-to-left truncation sweep; returns ``(mps, info_per_bond)``.
-
-    Assumes the MPS is left-canonical (call :func:`left_canonicalize` first).
-    Each internal bond ``p-1 | p`` is truncated by an SVD of site ``p`` grouped
-    as ``(chi_left) | (phi_up, chi_right)``, keeping site ``p`` right-canonical.
-    """
-    if strategy is None:
-        strategy = StandardSVD()
-    if ref_index is None:
-        ref_index = mps.d * mps.d
-    xp = _xp(mps.tensors[0])
-    infos = []
-    for p in range(mps.num_sites - 1, 0, -1):
-        G = mps.tensors[p]
-        dp, chil, chir = G.shape
-        mat = G.transpose(1, 0, 2).reshape(chil, dp * chir)
-        res = strategy.compress(
-            mat,
-            max_bond=max_bond,
-            cutoff=cutoff,
-            cutoff_mode=cutoff_mode,
-            ref_index=ref_index,
-            absorb="left",
-        )
-        US, Vh = res.left, res.right  # US: (chil, k), Vh: (k, dp*chir)
-        k = res.bond
-        mps.tensors[p] = Vh.reshape(k, dp, chir).transpose(1, 0, 2)
-        prev = mps.tensors[p - 1]  # (dp', l, r = chil)
-        # prev[p,l,r] . US[r,k] -> [p,l,k]
-        mps.tensors[p - 1] = xp.tensordot(prev, US, axes=([2], [0]))
-        infos.append(res.info)
-    infos.reverse()
-    return mps, infos
-
-
-def compress(mps, strategy=None, *, canon=None, engine="native",
-             compress_cutoff=1e-12, compress_cutoff_mode="rel",
-             compress_method="zipup", **trunc):
-    """Canonicalise then truncate in place; returns ``(mps, info_per_bond)``.
-
-    ``engine='native'`` (default) is the hand-rolled canonicalise + truncation
-    sweep: ``canon`` chooses the canonicalisation strategy (default Householder QR),
-    ``strategy`` the truncation/decomposition strategy.  ``engine='quimb'`` routes
-    the whole compression through quimb (``tensor_network_1d_compress``, cotengra/
-    autoray) with a quimb-native cutoff (``compress_cutoff`` / ``compress_cutoff_mode``
-    / ``compress_method``); ``canon``/``strategy`` are then unused.
-    """
-    if engine == "quimb":
-        from .quimb_compress import compress_quimb  # noqa: PLC0415
-
-        return compress_quimb(mps, max_bond=trunc.get("max_bond"),
-                              cutoff=compress_cutoff, cutoff_mode=compress_cutoff_mode,
-                              method=compress_method)
-    if engine != "native":
-        raise ValueError(f"unknown compress engine {engine!r}; choose 'native' or 'quimb'")
-    left_canonicalize(mps, canon=canon)
-    return truncate(mps, strategy=strategy, **trunc)
 
 
 # --------------------------------------------------------------------------

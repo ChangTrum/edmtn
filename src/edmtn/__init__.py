@@ -9,8 +9,8 @@ The package is organised in layers:
     models/        physical model definitions          (Layer 1)
     cumulants/     bath cumulant / correlation engines  (Layer 2)
     kernels/       kernel-tensor (MPO) construction      (Layer 3)
-    decomposition/, expansion/   SVD strategies + Trotter expansion (Layer 4)
-    evolution/     MPS evolution engine                  (Layer 5)
+    expansion/     Trotter time-step expansion           (Layer 4)
+    evolution/     quimb-backed MPS evolution + compression (Layer 5)
     observables/   observable extraction                 (Layer 6)
     driver/        orchestration                          (Layer 7)
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 from . import (
     backend,
     cumulants,
-    decomposition,
     driver,
     evolution,
     expansion,
@@ -39,7 +38,6 @@ __all__ = [
     "models",
     "cumulants",
     "kernels",
-    "decomposition",
     "expansion",
     "evolution",
     "observables",

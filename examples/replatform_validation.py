@@ -96,7 +96,7 @@ def battery_A_ground_truth(rep, backend, tol):
     # solver paths agree at near-zero cutoff (exact) on this small case.
     common = dict(T=T, eps=eps, expansion_order=order, cutoff=0.0, channel=3, record_rho=True)
     ref = solve(model, **common)
-    q = solve(model, compression="quimb", compress_cutoff=1e-15, compress_cutoff_mode="rel",
+    q = solve(model, cutoff=1e-15, cutoff_mode="rel",
               **common)
     nstep = min(len(ref.polarization), len(q.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:nstep]) - np.asarray(q.polarization[:nstep]))))
@@ -128,8 +128,8 @@ def battery_BC(rep, backend, tol, heavy):
                 ref = solve(model, **common)
                 t_ref = time.perf_counter() - t0
                 t0 = time.perf_counter()
-                q = solve(model, compression="quimb", compress_cutoff_mode=mode,
-                          compress_cutoff=cut, **common)
+                q = solve(model, cutoff_mode=mode,
+                          cutoff=cut, **common)
                 t_q = time.perf_counter() - t0
                 ns = min(len(ref.polarization), len(q.polarization))
                 err = float(np.max(np.abs(np.asarray(ref.polarization[:ns]) - np.asarray(q.polarization[:ns]))))
@@ -171,8 +171,8 @@ def battery_D_robustness(rep, backend, tol):
     model = GaudinModel(g=1.0, K=12)
     common = dict(T=3.0, eps=0.2, expansion_order=2, cutoff=1e-6, channel=3, backend=backend)
     # determinism: repeat must be bitwise identical
-    a = solve(model, compression="quimb", compress_cutoff_mode="rel", compress_cutoff=1e-13, **common)
-    b = solve(model, compression="quimb", compress_cutoff_mode="rel", compress_cutoff=1e-13, **common)
+    a = solve(model, cutoff_mode="rel", cutoff=1e-13, **common)
+    b = solve(model, cutoff_mode="rel", cutoff=1e-13, **common)
     drep = float(np.max(np.abs(np.asarray(a.polarization) - np.asarray(b.polarization))))
     rep.add("D. determinism (repeat)", drep == 0.0, f"max|d|={drep:.1e}")
     # cutoff convergence: tightening the quimb cutoff must not *increase* the gap to
@@ -184,7 +184,7 @@ def battery_D_robustness(rep, backend, tol):
     ref = solve(model, **common)
     errs = []
     for cut in (1e-8, 1e-11, 1e-14):
-        q = solve(model, compression="quimb", compress_cutoff_mode="rel", compress_cutoff=cut, **common)
+        q = solve(model, cutoff_mode="rel", cutoff=cut, **common)
         ns = min(len(ref.polarization), len(q.polarization))
         errs.append(float(np.max(np.abs(np.asarray(ref.polarization[:ns]) - np.asarray(q.polarization[:ns])))))
     floor = 1e-6  # native reference truncation (cutoff) -> the plateau level of the gap
@@ -202,8 +202,8 @@ def battery_E_trotter(rep, backend, tol):
     for eps in (0.4, 0.2, 0.1):
         common = dict(T=2.0, eps=eps, expansion_order=2, cutoff=1e-6, channel=3, backend=backend)
         ref = solve(model, **common)
-        q = solve(model, compression="quimb", compress_cutoff_mode="rel",
-                  compress_cutoff=1e-13, **common)
+        q = solve(model, cutoff_mode="rel",
+                  cutoff=1e-13, **common)
         # compare the final-time observable (same physical T) across pipelines
         gap = abs(float(np.asarray(ref.polarization)[-1]) - float(np.asarray(q.polarization)[-1]))
         gaps.append(gap)
@@ -221,8 +221,7 @@ def battery_F_cpu_gpu(rep, tol):
     for label, model, base in [("Gaudin", GaudinModel(g=1.0, K=12), dict(T=3.0, eps=0.2, channel=3)),
                                ("SpinBoson", SpinBosonModel(J0=0.6, omega_c=5.0, mu=1.0),
                                 dict(T=2.0, eps=0.1, channel=1))]:
-        common = dict(**base, expansion_order=2, cutoff=1e-6, compression="quimb",
-                      compress_cutoff_mode="rel", compress_cutoff=1e-13)
+        common = dict(**base, expansion_order=2, cutoff=1e-13, cutoff_mode="rel")
         c = solve(model, backend="cpu", **common)
         g = solve(model, backend="gpu", **common)
         ns = min(len(c.polarization), len(g.polarization))
@@ -246,8 +245,8 @@ def battery_G_knobs(rep, backend, tol, heavy):
         ("canon cholqr", dict(compress_method="zipup", compress_canon="cholqr")),
     ]
     for label, kw in combos:
-        got = solve(model, compression="quimb", compress_cutoff_mode="rel",
-                    compress_cutoff=1e-8, **kw, **base)
+        got = solve(model, cutoff_mode="rel",
+                    cutoff=1e-8, **kw, **base)
         ns = min(len(ref.polarization), len(got.polarization))
         err = float(np.max(np.abs(np.asarray(ref.polarization[:ns])
                                   - _as_np(got.polarization)[:ns])))

@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..decomposition.randomized_svd import RandomizedSVD
-from ..decomposition.standard_svd import StandardSVD
 from ..expansion.first_order import FirstOrderExpander
 from ..expansion.second_order import SecondOrderExpander
 from ..kernels.gaussian_mpo import GaussianKernelEngine
@@ -46,37 +44,32 @@ class SolverConfig:
         single-bath engine currently rejects it (doubled sub-step grid pending).
     record_rho : bool
         Store ``rho(t)`` at every step (needed for custom observables).
-    decomposition : DecompositionStrategy, optional
-        Compression strategy (default :class:`StandardSVD`).
-    canonicalization : CanonicalizationStrategy, optional
-        Canonicalisation strategy (default Householder QR; e.g. ``CholeskyQR()``).
+    cutoff, cutoff_mode : float, str
+        quimb truncation controls (default ``rel`` -- the built-in closest to the
+        retired ``rel_ref``).
+    compress_method, compress_decomp, compress_decomp_q, compress_canon :
+        quimb compression controls (see :mod:`edmtn.evolution.quimb_decomp`).
     """
 
     eps: float
     T: float
-    cutoff: float = 1e-6
-    cutoff_mode: str = "rel_ref"
+    cutoff: float = 1e-8
+    cutoff_mode: str = "rel"       # quimb-native cutoff (rel: faithful to the retired rel_ref)
     max_bond: int | None = None
-    ref_index: int | None = None
     expansion_order: int = 1
     record_rho: bool = False
-    decomposition: object | None = None
-    canonicalization: object | None = None  # None -> Householder QR; e.g. CholeskyQR()
-    compression: str = "native"  # 'native' | 'quimb' (quimb: tensor_network_1d_compress, ecosystem path)
-    compress_cutoff: float = 1e-12        # quimb path cutoff
-    compress_cutoff_mode: str = "rel"     # quimb path cutoff mode (rel: faithful to rel_ref; see docs)
-    compress_method: str = "zipup"        # quimb path 1D-compress method
-    compress_decomp: str = "exact"        # quimb path per-bond decomposition: 'exact' | 'rsvd'
+    compress_method: str = "zipup"        # quimb 1D-compress method: 'zipup' | 'dm' | 'direct'
+    compress_decomp: str = "exact"        # per-bond decomposition: 'exact' | 'rsvd'
     compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass)
-    compress_canon: str = "quimb"         # quimb path canonicalisation: 'quimb' | 'householder' | 'cholqr'
+    compress_canon: str = "quimb"         # canonicalisation: 'quimb' | 'householder' | 'cholqr'
     preset: str | None = None  # None | 'balanced' | 'robust' (see docs/recommended-config.md)
     sub_baths: int | None = None  # separable: fold only the first L sub-baths (Fig. 6)
     backend: str = "auto"  # 'auto' | 'cpu' | 'gpu' (auto -> CPU for Phase 1/2; see docs/cpu-vs-gpu-edm.md)
     precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
 
     def __post_init__(self):
-        # Resolve a strategy preset, but never override explicitly-passed strategies.
-        # Default (preset=None): StandardSVD + Householder (exact, deterministic).
+        # Resolve a preset onto the compression knobs; never override an explicit
+        # (non-default) decomposition choice.  Default (preset=None): exact full SVD.
         if self.preset is None:
             return
         if self.preset not in _PRESETS:
@@ -84,24 +77,21 @@ class SolverConfig:
                 f"unknown preset {self.preset!r}; choose from {sorted(_PRESETS)} or None"
             )
         spec = _PRESETS[self.preset]
-        if self.decomposition is None and "decomposition" in spec:
-            self.decomposition = spec["decomposition"]()
-        if self.canonicalization is None and "canonicalization" in spec:
-            self.canonicalization = spec["canonicalization"]()
+        if self.compress_decomp == "exact":  # only fill if left at the default
+            self.compress_decomp = spec["compress_decomp"]
+            self.compress_decomp_q = spec["compress_decomp_q"]
 
     @property
     def n_steps(self) -> int:
         return int(round(self.T / self.eps))
 
 
-# Recommended strategy presets (docs/recommended-config.md).  Canonicalisation is
-# Householder QR in both (the measured default everywhere), so only the
-# decomposition differs; factories so each solver gets a fresh instance.
+# Recommended presets (docs/recommended-config.md): both use quimb rSVD, differing
+# only in power iterations -- balanced = single-pass (q=0, fastest), robust = cold
+# (q=2, exact-baseline accuracy).  The silent guard falls back to full SVD either way.
 _PRESETS: dict = {
-    # balanced: fastest, GPU-friendly, accuracy < cutoff
-    "balanced": {"decomposition": lambda: RandomizedSVD(n_iter=0)},
-    # robust: exact-baseline bonds, ~1e-12 accuracy (cold rSVD)
-    "robust": {"decomposition": lambda: RandomizedSVD(n_iter=2)},
+    "balanced": {"compress_decomp": "rsvd", "compress_decomp_q": 0},
+    "robust": {"compress_decomp": "rsvd", "compress_decomp_q": 2},
 }
 
 
@@ -142,14 +132,8 @@ def _build_gaussian(model, config: SolverConfig):
     kernel_engine = GaussianKernelEngine.from_model(
         model, T=config.T, eps=config.eps, order=config.expansion_order
     )
-    decomposition = config.decomposition or StandardSVD()
     evolution = SingleBathEvolution(
         expander=_make_expander(config.expansion_order),
-        decomposition=decomposition,
-        canonicalization=config.canonicalization,
-        compression=config.compression,
-        compress_cutoff=config.compress_cutoff,
-        compress_cutoff_mode=config.compress_cutoff_mode,
         compress_method=config.compress_method,
         compress_decomp=config.compress_decomp,
         compress_decomp_q=config.compress_decomp_q,
@@ -160,14 +144,8 @@ def _build_gaussian(model, config: SolverConfig):
 
 def _build_separable(model, config: SolverConfig):
     kernel_engine = SeparableKernelEngine.from_model(model, T=config.T, eps=config.eps)
-    decomposition = config.decomposition or StandardSVD()
     evolution = SeparableBathEvolution(
         expander=_make_expander(config.expansion_order),
-        decomposition=decomposition,
-        canonicalization=config.canonicalization,
-        compression=config.compression,
-        compress_cutoff=config.compress_cutoff,
-        compress_cutoff_mode=config.compress_cutoff_mode,
         compress_method=config.compress_method,
         compress_decomp=config.compress_decomp,
         compress_decomp_q=config.compress_decomp_q,

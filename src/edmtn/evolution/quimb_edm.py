@@ -143,12 +143,19 @@ class QuimbEDM:
         from .quimb_decomp import compress_opts_for, canonize_opts_for  # noqa: PLC0415
 
         apply_quimb_cupy_compat()  # make quimb/autoray safe on CuPy-backed tensors
+        # only forward the opts when non-default: an empty dict is still passed
+        # through to the per-method split, and 'dm' (eigh) rejects canonize_opts
+        opts = {}
+        copts = compress_opts_for(decomp, decomp_q)
+        if copts:
+            opts["compress_opts"] = copts
+        canopts = canonize_opts_for(canon)
+        if canopts:
+            opts["canonize_opts"] = canopts
         cq = qtn.tensor_network_1d_compress(
             self.tn, max_bond=max_bond, cutoff=cutoff, method=method,
             site_tags=[f"I{p}" for p in range(self.n)], permute_arrays=False,
-            cutoff_mode=cutoff_mode, optimize="auto",
-            compress_opts=compress_opts_for(decomp, decomp_q),
-            canonize_opts=canonize_opts_for(canon))
+            cutoff_mode=cutoff_mode, optimize="auto", **opts)
         return QuimbEDM(cq, self.n, self.d, self.d_phys, self.rho0_vec, meta=self.meta)
 
     # -- single-bath step (one new time-site, Eq. 8) -----------------------

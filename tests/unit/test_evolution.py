@@ -195,8 +195,9 @@ def test_open_arm_tensor_closes_to_reduced(setup):
 def test_compress_keeps_norm_with_zero_cutoff(setup):
     model, engine, eps = setup
     res = SingleBathEvolution().run(model, engine, eps, n_steps=4, compress=False)
-    mps = res.mps.copy()
-    rho_before = mps.reduced_density_matrix()
-    mps_utils.compress(mps, cutoff=0.0)
-    rho_after = mps.reduced_density_matrix()
+    from edmtn.evolution.quimb_edm import QuimbEDM
+    rho_before = res.mps.reduced_density_matrix()
+    q = QuimbEDM.from_edmmps(res.mps.copy()).compress(
+        cutoff=0.0, cutoff_mode="rel", method="zipup", max_bond=None)
+    rho_after = q.reduced_density_matrix()
     np.testing.assert_allclose(rho_after, rho_before, atol=1e-11)

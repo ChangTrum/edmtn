@@ -26,9 +26,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..decomposition.standard_svd import StandardSVD
 from ..expansion.first_order import FirstOrderExpander
-from . import mps_utils
 
 
 @dataclass
@@ -62,28 +60,20 @@ class SingleBathEvolution:
     Parameters
     ----------
     expander : TimeStepExpander, optional
-        Small-step expansion (default :class:`FirstOrderExpander`).  Must be
-        first order in Phase 1.
-    decomposition : DecompositionStrategy, optional
-        Compression strategy (default :class:`StandardSVD`).
+        Small-step expansion (default :class:`FirstOrderExpander`).
+    compress_method, compress_decomp, compress_decomp_q, compress_canon :
+        quimb compression controls (see :mod:`edmtn.evolution.quimb_decomp`).
     """
 
-    def __init__(self, expander=None, decomposition=None, canonicalization=None,
-                 compression="native", compress_cutoff=1e-12,
-                 compress_cutoff_mode="rel", compress_method="zipup",
+    def __init__(self, expander=None, *, compress_method="zipup",
                  compress_decomp="exact", compress_decomp_q=2, compress_canon="quimb"):
         self.expander = expander if expander is not None else FirstOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(
                 f"unsupported expansion order {self.expander.order}"
             )
-        self.decomposition = decomposition if decomposition is not None else StandardSVD()
-        self.canonicalization = canonicalization  # None -> Householder QR
-        self.compression = compression  # 'native' | 'quimb'
-        self.compress_cutoff = compress_cutoff
-        self.compress_cutoff_mode = compress_cutoff_mode
-        self.compress_method = compress_method
-        self.compress_decomp = compress_decomp        # 'exact' | 'rsvd' (quimb path)
+        self.compress_method = compress_method         # quimb 1D-compress: 'zipup'|'dm'|'direct'
+        self.compress_decomp = compress_decomp         # 'exact' | 'rsvd'
         self.compress_decomp_q = compress_decomp_q     # rsvd power iterations
         self.compress_canon = compress_canon           # 'quimb' | 'householder' | 'cholqr'
 
@@ -96,8 +86,7 @@ class SingleBathEvolution:
         *,
         max_bond: int | None = None,
         cutoff: float = 0.0,
-        cutoff_mode: str = "rel_ref",
-        ref_index: int | None = None,
+        cutoff_mode: str = "rel",
         record_rho: bool = False,
         compress: bool = True,
         convert=None,
@@ -131,8 +120,6 @@ class SingleBathEvolution:
             for single-precision GPU.  Defaults to identity (CPU, complex128).
         """
         d = model.system_dim
-        if ref_index is None:
-            ref_index = d * d
         if convert is None:
             convert = lambda a: a  # noqa: E731
         rho0_vec = convert(model.initial_system_state().reshape(-1).astype(np.complex128))
@@ -147,63 +134,37 @@ class SingleBathEvolution:
         if record_rho:
             result.density_matrices = []
 
-        # 'quimb' carries the EDM as a quimb TensorNetwork through the step loop
-        # (the structural re-platform); 'native' keeps the bespoke EDMMPS path.
-        use_quimb = self.compression == "quimb"
-        if use_quimb:
-            from .quimb_edm import QuimbEDM  # noqa: PLC0415
+        # the EDM is carried as a quimb TensorNetwork through the step loop
+        from .quimb_edm import QuimbEDM  # noqa: PLC0415
 
-            mps = QuimbEDM.empty(rho0_vec, d, kernel_engine.d_phys)
-        else:
-            mps = None
+        mps = QuimbEDM.empty(rho0_vec, d, kernel_engine.d_phys)
         g = 0  # global sub-step index (1-based)
         for n in range(1, n_steps + 1):
             t_phys = n * eps
             families = [convert(f) for f in self.expander.build_at(model, t_phys, eps).families]
-            err = 0.0
             for sub in range(order):  # S_1 then S_2 for order 2; single for order 1
                 g += 1
                 ksites = [convert(k) for k in kernel_engine.get_kernel_mpo(g).site_tensors]
-                if use_quimb:
-                    mps = mps.step(ksites, families[sub], d)
-                    if compress and mps.num_sites > 1:
-                        # exact step (compress=False) is reproduced by a zero cutoff
-                        mps = mps.compress(
-                            cutoff=self.compress_cutoff if compress else 0.0,
-                            cutoff_mode=self.compress_cutoff_mode,
-                            method=self.compress_method,
-                            max_bond=max_bond if compress else None,
-                            decomp=self.compress_decomp,
-                            decomp_q=self.compress_decomp_q,
-                            canon=self.compress_canon,
-                        )
-                    continue
-                mps = mps_utils.apply_step(mps, ksites, families[sub], d, rho0_vec)
+                mps = mps.step(ksites, families[sub], d)
                 if compress and mps.num_sites > 1:
-                    mps, infos = mps_utils.compress(
-                        mps,
-                        strategy=self.decomposition,
-                        canon=self.canonicalization,
-                        engine=self.compression,
-                        compress_cutoff=self.compress_cutoff,
-                        compress_cutoff_mode=self.compress_cutoff_mode,
-                        compress_method=self.compress_method,
-                        max_bond=max_bond,
-                        cutoff=cutoff,
+                    # exact step (compress=False) is reproduced by a zero cutoff
+                    mps = mps.compress(
+                        cutoff=cutoff if compress else 0.0,
                         cutoff_mode=cutoff_mode,
-                        ref_index=ref_index,
+                        method=self.compress_method,
+                        max_bond=max_bond if compress else None,
+                        decomp=self.compress_decomp,
+                        decomp_q=self.compress_decomp_q,
+                        canon=self.compress_canon,
                     )
-                    if infos:
-                        err = max(err, max(info["error"] for info in infos))
 
             # record after the complete physical step
             result.times.append(t_phys)
             result.bond_dims.append(mps.max_bond)
-            result.truncation_errors.append(float(err))
+            result.truncation_errors.append(0.0)
             if record_rho:
                 result.density_matrices.append(mps.reduced_density_matrix())
 
-        # hand back a plain EDMMPS so observable extraction (which reads per-site
-        # tensors) is identical regardless of the carried container
-        result.mps = mps.to_edmmps() if use_quimb else mps
+        # hand back a plain EDMMPS so observable extraction reads per-site tensors
+        result.mps = mps.to_edmmps()
         return result
