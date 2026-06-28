@@ -159,12 +159,20 @@ def error_metrics(rho, *, optimizer_info=None, truncation=None) -> dict:
 # --------------------------------------------------------------------------
 
 def _contract_exact_numpy(operands, modes, out_modes):
-    """Exact contraction via NumPy einsum — local reference / tests only."""
+    """Exact contraction on CPU — local reference / tests only.
+
+    Uses **opt_einsum**'s path optimizer, NOT ``np.einsum(optimize=True)``: numpy's
+    greedy picks a pathological order for the 2D grid and explodes the intermediate
+    at modest size — it *hangs* by K=3,N=4 (a C-level einsum loop, uninterruptible),
+    whereas opt_einsum ``'auto'`` finds the grid/boundary path in ~ms (verified to
+    K=4,N=10). The GPU path uses cuTensorNet's own optimizer, which is unaffected.
+    """
+    import opt_einsum as oe  # noqa: PLC0415 - quimb/cotengra dependency, always present
     args = []
     for op, md in zip(operands, modes):
         args += [op, list(md)]
     args.append(list(out_modes))
-    return np.einsum(*args, optimize=True), None
+    return oe.contract(*args, optimize="auto"), None
 
 
 def _contract_exact_cuquantum(operands, modes, out_modes, *, pathfinder):
