@@ -207,12 +207,16 @@ def _contract_approx_cuquantum(operands, modes, out_modes, *, max_bond, cutoff,
     out_ix = out_modes[0]
     tn = qtn.TensorNetwork([qtn.Tensor(o, inds=tuple(f"i{m}" for m in md))
                             for o, md in zip(gpu_ops, modes)])
-    # a compressed contraction order keeps intermediates bounded (else quimb warns)
+    # max_bond / cutoff are direct kwargs; cutoff_mode threads via the per-bond
+    # compress_opts (contract_compressed rejects it as a direct kwarg).
     opts = dict(max_bond=max_bond, cutoff=cutoff)
     if cutoff_mode is not None:
-        opts["cutoff_mode"] = cutoff_mode
+        opts["compress_opts"] = {"cutoff_mode": cutoff_mode}
     try:
-        r = tn.contract_compressed("auto-hq", output_inds=(f"i{out_ix}",), **opts)
+        # TODO(B-perf): a compression-aware contraction tree (cotengra
+        # HyperCompressedOptimizer) would avoid the "tree not compressed" notice;
+        # 'auto' is correct (B0-validated) but not the most efficient order.
+        r = tn.contract_compressed("auto", output_inds=(f"i{out_ix}",), **opts)
     except Exception as e:  # noqa: BLE001
         raise CuTensorNetContractionError(
             f"approximate one-shot contraction failed ({type(e).__name__}: {e}). "
