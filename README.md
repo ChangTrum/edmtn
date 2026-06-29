@@ -1,59 +1,130 @@
 # edmtn
 
-Extended Density Matrix (EDM) tensor-network solver for non-Markovian open
-quantum systems, built on the **quimb + cotengra + autoray** ecosystem (with
-optional **CuPy** GPU execution).
+**Simulate how a small quantum system loses coherence to its environment — fast.**
 
-It implements the polynomial-complexity EDM formalism of Chen & Liu,
-*Polynomial complexity of open quantum system problems* (arXiv:2509.00424): the
-reduced dynamics of a small system coupled to a quantum bath is represented by an
-extended-density-matrix tensor network whose bond dimension grows only linearly in
-evolution time, propagated by a combined-kernel MPO built from the bath cumulants.
+`edmtn` computes the time evolution of a quantum system (e.g. a single spin)
+coupled to a noisy bath, and returns observables like the polarization
+`⟨S_z(t)⟩` and the density matrix `ρ(t)`. It implements the polynomial-complexity
+method of Chen & Liu, *Polynomial complexity of open quantum system problems*
+([arXiv:2509.00424](https://arxiv.org/abs/2509.00424)): the cost grows only
+**linearly in evolution time** instead of exponentially, so you can reach long
+times and many bath modes on ordinary hardware.
 
-## Status
+You don't need to know tensor networks to use it — pick a model, call `solve(...)`,
+read the result. Tuning and internals are there when you want them.
 
-**Both demonstrator models solved end-to-end and validated** against exact
-references (machine precision uncompressed; `⟨S_z(t)⟩` reproduced under
-compression):
+```python
+from edmtn.driver import solve
+from edmtn.models import GaudinModel
 
-- **spin-boson** — a spin in a Gaussian bosonic bath (single-bath forward
-  recursion).
-- **Gaudin** — a central spin in `K` independent bath spins, a *separable*
-  non-Gaussian bath (the Eq. 21 outer-loop recursion; `sub_baths` folds the first
-  `L` spins, Fig. 6).
+res = solve(GaudinModel(g=1.0, K=49), T=15.0, eps=0.03, channel=3)  # central spin in 49 bath spins
+print(res.times, res.polarization)   # t,  <S_z(t)>
+```
 
-**Re-platformed onto quimb (complete).** The compression pipeline is now a single
-ecosystem path: the EDM is carried as a quimb `TensorNetwork` and compressed via
-`tensor_network_1d_compress` (canonicalisation + truncation), dispatched through
-**autoray** so the *same code runs on NumPy and CuPy*. The previous hand-rolled
-"native" path (bespoke SVD/QR sweeps, `StandardSVD`/`RandomizedSVD`, the
-`s_i/s_{d²+1}` `rel_ref` cutoff) has been **retired** — see
-[docs/phase0-replatform-decisions.md](docs/phase0-replatform-decisions.md). Validated
-on CPU (full suite) and on a single A800 GPU (CPU↔GPU agreement ~1e-13).
+That runs on CPU, anywhere, with nothing extra installed.
 
-**Next: cuQuantum + single-node multi-GPU** (cuTensorNet decomposition/contraction,
-then cotengra slicing across multiple GPUs — the capacity lever for long evolution).
-See [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+## What it can do
 
-What's implemented:
+- **Two ready-made models** — *spin-boson* (a spin in a bosonic/Ohmic bath) and
+  *Gaudin* (a central spin in `K` bath spins). Both validated to machine precision
+  against exact references.
+- **Three backends, one API** — `cpu` (default, runs everywhere), `gpu` (one NVIDIA
+  card), `hpc` (all GPUs on a node, exact). Just change `backend=...`; see
+  **[Which backend?](#which-backend)**.
+- **Observables out of the box** — `⟨S_z(t)⟩` (or any coupling channel), the full
+  `ρ(t)`, the bond-dimension growth `D_t`, and convergence checks.
 
-- spin-boson model (generalised Ohmic bath, zero temperature) and Gaudin model
-  (linearly-decreasing couplings, infinite-temperature spin bath);
-- Gaussian second-order cumulants (closed-form Ohmic correlation + numeric
-  cross-check) **and** separable bath-correlation transfer tensors (Eq. F1);
-- combined-kernel MPO (Gaussian and separable), **first- and second-order**
-  time-step expansion (second order on a doubled sub-step grid);
-- **quimb-backed compression** — canonicalise + truncate in one call, with a
-  choice of method (`zipup`/`dm`/`direct`), per-bond decomposition (exact full SVD
-  or randomized SVD with a silent resolution guard), and canonicalisation QR;
-- MPS evolution engines: single-bath forward recursion **and** the separable
-  outer-loop over sub-baths;
-- observable extraction: reduced density matrix, single-time expectations, and the
-  all-times coupling-channel polarization (Eq.-F2 / Eq.-F3 environment sweep);
-- a driver that wires the pipeline from `bath_type` and selects the compute
-  backend, plus convergence helpers.
+## Install
 
-## Layout
+```bash
+pip install -e .          # from the repo root; or just put src/ on PYTHONPATH
+```
+
+CPU works immediately (NumPy). For a GPU add a CuPy wheel matching your CUDA
+(`pip install cupy-cuda12x`); for the multi-GPU `hpc` track add
+`cuquantum-python-cu12`. See **[Environment](#environment)**.
+
+## First run (copy-paste)
+
+```python
+from edmtn.driver import solve
+from edmtn.models import SpinBosonModel, GaudinModel
+
+# spin-boson (a spin in a Gaussian bosonic bath)
+sb = SpinBosonModel(J0=0.5, omega_c=5.0, mu=1.0)
+res = solve(sb, T=8.0, eps=0.02, expansion_order=2, cutoff=1e-8)
+print(res.times)          # mu * t
+print(res.polarization)   # <S_z(t)>
+
+# Gaudin (a central spin in K bath spins); channel 3 = <S_z>
+g = GaudinModel(g=1.0, K=49)
+res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8, max_bond=400, channel=3)
+print(res.polarization)   # <S_z(t)>
+print(res.mps.bond_dims)  # D_t — how the cost grows (linearly in time)
+```
+
+## What you get back
+
+`solve(...)` returns a `SolverResult`:
+
+| field | what it is |
+|---|---|
+| `res.times` | the time grid |
+| `res.polarization` | `⟨S_channel(t)⟩` over time (pick `channel=` in `solve`) |
+| `res.bond_dims` / `res.mps.bond_dims` | bond dimension per step / per time `D_t` |
+| `res.density_matrices` | the density matrix `ρ(t)` (always first-class on `hpc`; on cpu/gpu set `record_rho=True`) |
+| `res.error_metrics` | (`hpc` only) `‖ρ−ρ†‖`, `|Tr ρ−1|`, optimizer slice/flop counts |
+| `res.backend` | the resolved device/track that actually ran |
+
+## Which backend?
+
+Change one argument, `backend=`. Same physics, same result (to round-off) — the
+choice is about *speed and scale*:
+
+| `backend` | runs on | use it when |
+|---|---|---|
+| `cpu` *(default)* | any machine, NumPy | development, small/medium problems — works out of the box, no GPU needed |
+| `gpu` | one NVIDIA GPU, CuPy | larger problems where the bond dimension is big |
+| `hpc` | **all** NVIDIA GPUs on a node, cuQuantum | exact (no truncation) results, and the very largest jobs |
+
+**Rule of thumb:** start with `cpu`; switch to `gpu` if you have one NVIDIA card
+and the run is slow; use `hpc` when you want an *exact* answer or need to push a
+job that's too big for one card.
+
+`cpu` and `gpu` are **Track 1** — they compress the tensor network (truncate small
+singular values, controlled by `cutoff`/`max_bond`), which scales to long times and
+many bath spins. `hpc` is **Track 2** — it lays the whole problem out as a 2D
+space×time network and contracts it **exactly** with cuQuantum (cuTensorNet), with
+**no truncation knobs**; its wins are higher precision and automatic multi-GPU
+slicing for the exact contraction. (The truncated regime stays on Track 1, which
+already scales there.)
+
+### Running on `hpc` (multi-GPU)
+
+`hpc` uses **every GPU you launch it across** — one process per GPU. edmtn does
+*not* submit jobs, ssh, or call `srun`/`sbatch` for you; that's your workflow. To
+use 4 GPUs on a SLURM node, launch 4 ranks:
+
+```bash
+srun --mpi=pmi2 --ntasks=4 --gres=gpu:4 python your_script.py
+```
+
+Your script is unchanged — just `backend='hpc'`:
+
+```python
+res = solve(GaudinModel(g=1.0, K=12), T=0.6, eps=0.1, channel=3, backend='hpc')
+res.density_matrices   # ρ(t)
+res.error_metrics      # {hermiticity, trace_dev, num_slices, flops}
+res.backend            # e.g. 'hpc/exact/cuquantum/4gpu'
+```
+
+If you run `hpc` on a single GPU (or the problem is small enough to fit one card),
+edmtn warns and suggests scaling up or using Track 1 — it still works, it just isn't
+where `hpc` pays off. Ready-to-edit launch scripts live in
+[`cluster/`](cluster/). Design + status:
+[docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+
+## Package layout
 
 ```
 edmtn/
@@ -77,27 +148,11 @@ edmtn/
 └── docs/                       # design decisions, benchmarks, environment notes
 ```
 
-## Quickstart
+## Configuration (tuning knobs)
 
-```python
-from edmtn.driver import solve
-from edmtn.models import SpinBosonModel, GaudinModel
-
-# spin-boson (Gaussian bath)
-sb = SpinBosonModel(J0=0.5, omega_c=5.0, mu=1.0)
-res = solve(sb, T=8.0, eps=0.02, expansion_order=2, cutoff=1e-8)
-res.times, res.polarization, res.bond_dims   # mu*t, <S_z(t)>, bond dim per step
-
-# Gaudin (separable spin bath); channel 3 is <S_z>
-g = GaudinModel(g=1.0, K=49)
-res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8,
-            max_bond=400, channel=3)
-res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
-```
-
-## Configuration
-
-`solve(model, *, T, eps, channel=1, **config)` (and `EDMSolver.from_model`) accept:
+You only need `T`, `eps`, and maybe `channel` to get going. The rest are optional
+knobs — `solve(model, *, T, eps, channel=1, **config)` (and `EDMSolver.from_model`)
+accept:
 
 | knob | values (default) | meaning |
 |---|---|---|
@@ -146,37 +201,12 @@ res = solve(g, T=15.0, eps=0.03, expansion_order=2, cutoff=1e-8, max_bond=400,
 A preset only fills `compress_decomp`/`compress_decomp_q` if you left them at the
 default; it never overrides `backend`.
 
-**Backend.** `cpu` (default) runs on NumPy; `gpu` runs on CuPy (needs a matching CuPy
-wheel — see *Environment*). GPU pays off once the bond is large; small problems are
-CPU-competitive. The compute is backend-agnostic (autoray), so results agree across
-devices to round-off.
-
-**HPC track (`backend='hpc'`).** A separate, NVIDIA-GPU-only track for **precision and
-multi-GPU capacity**. Instead of Track 1's sequential fold-then-compress, it lays the
-whole separable-bath EDM out as a **2D space×time tensor network** (paper Sec. V) and
-contracts it **exactly, in one shot, with cuQuantum (cuTensorNet)**, which owns path
-search, slicing, hardware scheduling, and execution (cotengra stays a selectable
-fallback path-finder). This is the **exact route only** — genuinely no truncation, no
-knobs; the 2D framing buys a far larger contraction-order search and **native multi-GPU
-slicing** (one MPI rank per GPU) for the exponentially-growing exact contraction. The
-**truncated/approximate regime stays in Track 1** (`backend='cpu'`/`'gpu'`), whose
-quimb fold already scales to large N/K — cuTensorNet's MPS-method adds nothing there
-(single-GPU, and it breaks past ~20 time steps), so the Track-1 truncation knobs
-(`compress_decomp`, `cutoff`, `cutoff_mode`, `max_bond`, …) are **N/A under `hpc`**.
-The **density operator ρ(t) is returned first-class** (`result.density_matrices`), the
-channel polarization is derived only if `channel` is given, and **error metrics** are
-reported (`result.error_metrics`: ‖ρ−ρ†‖, |Tr ρ−1|, optimizer slices/flops). Needs
-`cuquantum-python-cu12`; never imported on the Track-1 (CPU/Win/Mac) path. Design +
-status: [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
-
-```python
-# exact 2D contraction; cuTensorNet owns path+slicing; ρ(t) + error metrics returned
-res = solve(GaudinModel(g=1.0, K=12), T=0.6, eps=0.1, channel=3, backend='hpc')
-res.density_matrices, res.error_metrics      # ρ(t), {hermiticity, trace_dev, num_slices, …}
-
-# multi-GPU (4 ranks, one GPU each); cuTensorNet distributes the slices:
-#   srun --mpi=pmi2 --ntasks=4 python your_script.py
-```
+The compute is backend-agnostic (autoray), so `cpu` and `gpu` agree to round-off.
+For when to pick which — and how `hpc` differs (exact, multi-GPU, no truncation
+knobs) — see **[Which backend?](#which-backend)** above. Under the hood, the `hpc`
+track lays the whole problem out as a 2D space×time network and contracts it exactly
+with cuQuantum/cuTensorNet; design + status:
+[docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
 
 ## Performance & design notes
 
@@ -200,6 +230,12 @@ On a CUDA machine, add a CuPy wheel matching your CUDA toolkit to enable
 `backend='gpu'`, e.g. `pip install cupy-cuda12x` (CUDA 12.x). The GPU path applies
 two small compatibility shims for quimb-on-CuPy automatically
 (see [docs/quimb-cupy-namespace-bug.md](docs/quimb-cupy-namespace-bug.md)).
+
+For `backend='hpc'` (NVIDIA only) also install `cuquantum-python-cu12`. Multi-GPU
+needs an MPI launcher (`srun`/`mpirun`) and the cuTensorNet MPI wrapper — the
+`cluster/` launch scripts set the required env (`CUTENSORNET_COMM_LIB`,
+`LD_PRELOAD`); see [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+None of this is imported on the CPU / Track-1 path, so CPU-only installs stay clean.
 
 On some Windows quimb envs, set `MKL_THREADING_LAYER=TBB` before NumPy is imported
 to avoid an OpenMP-runtime clash (`conda env config vars set MKL_THREADING_LAYER=TBB

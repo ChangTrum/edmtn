@@ -237,7 +237,8 @@ def _resolve_comm_lib() -> str:
 def _make_dist(mpi_ctx):
     """Bind a distributed cuTensorNet handle to the MPI communicator (one GPU/rank).
 
-    Returns ``{comm, rank, size, handle, device_id}`` or ``None`` for single-GPU.
+    hpc uses every GPU it was launched with, so rank ``i`` takes device ``i``
+    (``rank % count``). Returns ``{comm, rank, size, handle, device_id}`` or ``None``.
     """
     if mpi_ctx is None:
         return None
@@ -350,8 +351,8 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
     pathfinder = getattr(config, "pathfinder", "cuquantum")
     N = config.n_steps
 
-    # multi-GPU: cuTensorNet distributes the exact contraction across the MPI ranks
-    # (one GPU each), auto-detected from the launcher; None for a single process.
+    # multi-GPU: cuTensorNet distributes the exact contraction across all the MPI
+    # ranks (one GPU each), auto-detected from the launcher; None for a single process.
     dist = None
     mpi_ctx = _mpi_context() if executor != "numpy" else None
     if mpi_ctx is not None:
@@ -371,6 +372,11 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
             from cuquantum.bindings import cutensornet as cutn  # noqa: PLC0415
             cutn.destroy(dist["handle"])
 
+    ngpu = dist["size"] if dist is not None else 1
+    rank0 = (dist is None) or (dist["rank"] == 0)
+    if rank0 and executor != "numpy":
+        _hpc_efficiency_hint(ngpu, metrics_last)
+
     times = config.eps * np.arange(1, N + 1)
     pol = None
     if channel is not None:
@@ -379,9 +385,29 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
     return dict(
         times=times, density_matrices=rhos, final_rho=rhos[-1],
         polarization=pol, error_metrics=metrics_last, mode="exact", pathfinder=pathfinder,
-        ngpu=(dist["size"] if dist is not None else 1),
-        rank=(dist["rank"] if dist is not None else 0),
+        ngpu=ngpu, rank=(dist["rank"] if dist is not None else 0),
     )
+
+
+def _hpc_efficiency_hint(ngpu: int, metrics: dict | None) -> None:
+    """Warn (suppressibly) when an hpc run isn't using its multi-GPU capacity lever:
+    a single GPU, or a contraction that needed no slicing (it fit one card, so the
+    extra GPUs bought nothing). Points at scaling up or Track 1."""
+    import warnings  # noqa: PLC0415
+    slices = (metrics or {}).get("num_slices")
+    if ngpu <= 1:
+        warnings.warn(
+            "backend='hpc' is running on a single GPU. Its advantage is the multi-GPU "
+            "capacity lever for large exact contractions; for small problems Track 1 "
+            "(backend='cpu'/'gpu') is usually faster. To use more GPUs, launch one rank "
+            "per GPU (e.g. `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>`).",
+            stacklevel=2)
+    elif slices is not None and slices <= 1:
+        warnings.warn(
+            f"backend='hpc' used {ngpu} GPUs but the contraction needed no slicing "
+            "(it fits one GPU), so the extra GPUs gave no speed-up. Scale K/T up to use "
+            "the capacity, or run on fewer GPUs / Track 1 for a problem this size.",
+            stacklevel=2)
 
 
 def _make_expander(order: int):

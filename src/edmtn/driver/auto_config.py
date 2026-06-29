@@ -69,7 +69,10 @@ class SolverConfig:
     # -- backend='hpc' only; ignored otherwise --
     pathfinder: str = "cuquantum"   # 'cuquantum' (default, cuTensorNet owns path) | 'cotengra'
     time_windows: int | None = None  # None = one-shot whole-spacetime; int = manual window blocking
-    # (deferred to after C2: a `gpus=N` count knob + NVLink-topology-aware rank->device selection)
+    # NB: hpc has no GPU-count knob -- it uses every GPU it is launched across (cuTensorNet
+    # is one rank per GPU). Launch one rank per GPU with your own workflow, e.g.
+    # `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>` (see examples/cluster); edmtn
+    # itself does not submit/srun/ssh -- that is the user's job.
 
     def __post_init__(self):
         # Presets are Track-1 rSVD recipes; they don't apply to the hpc track
