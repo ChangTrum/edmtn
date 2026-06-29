@@ -59,7 +59,7 @@ class SolverConfig:
     expansion_order: int = 1
     record_rho: bool = False
     compress_method: str = "zipup"        # 'zipup'|'dm'|'direct' (quimb 1D-compress; N/A under backend='hpc')
-    compress_decomp: str = "exact"        # cpu/gpu: 'exact'|'rsvd'.  hpc: 'exact'(no knobs)|'approx'
+    compress_decomp: str = "exact"        # cpu/gpu: 'exact'|'rsvd' (N/A under 'hpc': Track 2 is exact-only, no truncation)
     compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass; N/A under 'hpc')
     compress_canon: str = "quimb"         # 'quimb'|'householder'|'cholqr' (canon QR; N/A under 'hpc')
     preset: str | None = None  # None|'balanced'|'robust' (cpu/gpu only; see docs/recommended-config.md)
@@ -69,10 +69,11 @@ class SolverConfig:
     # -- backend='hpc' only; ignored otherwise --
     pathfinder: str = "cuquantum"   # 'cuquantum' (default, cuTensorNet owns path) | 'cotengra'
     time_windows: int | None = None  # None = one-shot whole-spacetime; int = manual window blocking
+    # (deferred to after C2: a `gpus=N` count knob + NVLink-topology-aware rank->device selection)
 
     def __post_init__(self):
-        # Presets are Track-1 rСVD recipes; they don't apply to the hpc track
-        # (where compress_decomp is exact/approx) -- never silently flip its mode.
+        # Presets are Track-1 rSVD recipes; they don't apply to the hpc track
+        # (Track 2 is exact-only, no truncation knobs).
         if self.preset is None or self.backend == "hpc":
             return
         if self.preset not in _PRESETS:

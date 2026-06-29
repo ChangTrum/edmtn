@@ -2,11 +2,11 @@
 
     PYTHONPATH=src python examples/cutensornet_sanity.py
 
-Validates the ``backend="hpc"`` path end-to-end on the GPU: the exact mode
-(`compress_decomp="exact"`) reproduces Track 1's exact fold to machine precision,
-and the approximate mode (`compress_decomp="approx"`) truncates with err≈cutoff —
-both reporting the reference error metrics. Also exercises the public
-``solve(backend="hpc")`` driver entry. Non-zero exit ⇒ a gate failed.
+Validates the ``backend="hpc"`` path end-to-end on the GPU: the exact 2D contraction
+reproduces Track 1's exact fold to machine precision (both path-finders), reporting
+the reference error metrics. Also exercises the public ``solve(backend="hpc")`` driver
+entry. Track 2 is the exact route only — the truncated regime lives in Track 1.
+Non-zero exit ⇒ a gate failed.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def exact_vs_track1():
                             (1, 4, 3, "cuquantum"), (1, 3, 4, "cotengra")]:
         model = GaudinModel(g=1.0, K=K, time_step_order=order)
         cfg = SolverConfig(eps=0.1, T=N * 0.1, expansion_order=order, backend="hpc",
-                           compress_decomp="exact", pathfinder=pf)
+                           pathfinder=pf)
         out = solve_cutensornet(model, cfg, channel=3, executor="cuquantum")
         ref = track1_final_rho(model, order, 0.1, N)
         err = float(np.max(np.abs(out["final_rho"] - ref)))
@@ -62,27 +62,10 @@ def exact_vs_track1():
     print(f"  exact: all PASS (worst {worst:.2e})")
 
 
-def approx_vs_exact():
-    _section("approx mode: err vs cutoff (truncation engaged), vs exact-hpc")
-    model = GaudinModel(g=1.0, K=6, time_step_order=1)
-    N = 9  # longer evolution so the EDM bond grows enough for the cutoff to bite
-    cfg_ex = SolverConfig(eps=0.1, T=N * 0.1, expansion_order=1, backend="hpc",
-                          compress_decomp="exact")
-    rho_ex = solve_cutensornet(model, cfg_ex, channel=None, executor="cuquantum")["final_rho"]
-    for cutoff in (1e-2, 1e-4, 1e-6):
-        cfg = SolverConfig(eps=0.1, T=N * 0.1, expansion_order=1, backend="hpc",
-                           compress_decomp="approx", cutoff=cutoff, cutoff_mode="rel",
-                           max_bond=256)
-        out = solve_cutensornet(model, cfg, channel=None, executor="cuquantum")
-        err = float(np.max(np.abs(out["final_rho"] - rho_ex)))
-        print(f"  cutoff={cutoff:.0e}: max|Δ vs exact-hpc|={err:.2e} "
-              f"herm={out['error_metrics']['hermiticity']:.1e}")
-
-
 def driver_end_to_end():
     _section("public solve(backend='hpc') driver path")
     model = GaudinModel(g=1.0, K=3, time_step_order=2)
-    res = solve(model, T=0.3, eps=0.1, channel=3, backend="hpc", compress_decomp="exact")
+    res = solve(model, T=0.3, eps=0.1, channel=3, backend="hpc")
     print(f"  backend label: {res.backend}")
     print(f"  times: {np.asarray(res.times)}")
     print(f"  <S_z(t)>: {np.asarray(res.polarization)}")
@@ -95,7 +78,6 @@ def driver_end_to_end():
 def main() -> int:
     versions()
     exact_vs_track1()
-    approx_vs_exact()
     driver_end_to_end()
     _section("RESULT")
     print("HPC track GPU validation: PASS")

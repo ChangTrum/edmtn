@@ -3,18 +3,24 @@
 ``backend="hpc"`` routes :func:`edmtn.driver.solve` here instead of Track 1's
 sequential fold. The whole separable-bath EDM is laid out as a **2D space×time
 tensor network** (paper Sec. V) and contracted **in one shot by cuTensorNet**,
-which owns path search, slicing, hardware scheduling, and execution. Two modes,
-selected by ``compress_decomp`` (reinterpreted under ``hpc``):
+which owns path search, slicing, hardware scheduling, and execution.
 
-* ``"exact"`` — genuinely **no truncation**, **no knobs**; ``cuquantum.tensornet
-  .contract`` (slicing manages memory only). Reports reference error metrics.
-* ``"approx"`` — truncation via the ``cutoff`` / ``cutoff_mode`` / ``max_bond``
-  knobs (original Track-1 rules), routed **through quimb** ``contract_compressed``.
+Track 2 is the **exact** route only: genuinely **no truncation**, **no knobs**;
+``cuquantum.tensornet.contract`` (slicing manages memory only), reporting reference
+error metrics. This is where the 2D framing pays off — a far larger contraction-order
+optimisation space and native multi-GPU slicing for the exponentially-growing exact
+contraction. The **truncated/approximate** regime is a sequential boundary-MPS sweep
+over the sub-baths, which is exactly Track 1's quimb fold (``backend="cpu"``/``"gpu"``)
+and already scales to large N/K; cuTensorNet adds nothing there (its MPS-method
+``NetworkState`` is single-GPU and int-overflows past ~20 time sites). So ``backend=
+"hpc"`` has **no** truncation mode at all — the Track-1 knobs (``compress_decomp``,
+``cutoff``, ``cutoff_mode``, ``max_bond``, ...) are N/A here. See
+``docs/multi-gpu-cuquantum-design.md`` for the evidence.
 
 The contraction-**path-finder** is selectable (``pathfinder``): ``"cuquantum"``
-(default — cuTensorNet's own optimizer) or ``"cotengra"`` (cotengra finds the
-path, cuQuantum executes). Time layout: one-shot whole-spacetime (default) or
-manual time-window blocking (``time_windows``). Both modes return error metrics.
+(default — cuTensorNet's own optimizer) or ``"cotengra"`` (cotengra finds the path,
+cuQuantum executes). Time layout: one-shot whole-spacetime (default) or manual
+time-window blocking (``time_windows``).
 
 ``cupy`` / ``cuquantum`` / ``quimb`` are imported **lazily inside the functions**
 so Track 1 (CPU / Windows / macOS) never imports them.
@@ -131,15 +137,14 @@ def _interleaved(operands, modes, out_modes):
 
 
 # --------------------------------------------------------------------------
-# error metrics (returned with every hpc result, exact and approx)
+# error metrics (returned with every hpc result)
 # --------------------------------------------------------------------------
 
-def error_metrics(rho, *, optimizer_info=None, truncation=None) -> dict:
-    """Reference error metrics for an `hpc` reduced density matrix.
+def error_metrics(rho, *, optimizer_info=None) -> dict:
+    """Reference error metrics for an `hpc` (exact) reduced density matrix.
 
     Always: ``hermiticity`` = ‖ρ−ρ†‖∞, ``trace_dev`` = |Tr ρ − 1|. Plus, when
-    available, the cuTensorNet optimizer info (``num_slices``, ``flops``) for the
-    exact mode and the discarded weight for the approximate mode.
+    available, the cuTensorNet optimizer info (``num_slices``, ``flops``).
     """
     m = {
         "hermiticity": float(np.max(np.abs(rho - rho.conj().T))),
@@ -149,8 +154,6 @@ def error_metrics(rho, *, optimizer_info=None, truncation=None) -> dict:
         oi = optimizer_info[1] if isinstance(optimizer_info, tuple) else optimizer_info
         m["num_slices"] = getattr(oi, "num_slices", None)
         m["flops"] = getattr(oi, "opt_cost", getattr(oi, "flop_count", None))
-    if truncation is not None:
-        m["discarded_weight"] = float(truncation)
     return m
 
 
@@ -298,70 +301,23 @@ def _contract_exact_cuquantum(operands, modes, out_modes, *, pathfinder, dist=No
     raise ValueError(f"unknown pathfinder {pathfinder!r}; choose 'cuquantum' or 'cotengra'")
 
 
-def _contract_approx_cuquantum(operands, modes, out_modes, *, max_bond, cutoff,
-                               cutoff_mode, pathfinder):
-    """Approximate (truncated) one-shot through quimb ``contract_compressed`` on GPU.
-
-    The cuTensorNet-native bounded-bond MPS route (``NetworkState``/``MPSConfig``)
-    is the multi-GPU-scalable approximate path and is deferred to Phase C; B1's
-    approximate mode is the through-quimb ``contract_compressed`` (cupy SVDs).
-    """
-    import cupy as cp  # noqa: PLC0415
-    import quimb.tensor as qtn  # noqa: PLC0415
-
-    gpu_ops = [cp.asarray(o) for o in operands]
-    out_ix = out_modes[0]
-    tn = qtn.TensorNetwork([qtn.Tensor(o, inds=tuple(f"i{m}" for m in md))
-                            for o, md in zip(gpu_ops, modes)])
-    # max_bond / cutoff are direct kwargs; cutoff_mode threads via the per-bond
-    # compress_opts (contract_compressed rejects it as a direct kwarg).
-    opts = dict(max_bond=max_bond, cutoff=cutoff)
-    if cutoff_mode is not None:
-        opts["compress_opts"] = {"cutoff_mode": cutoff_mode}
-    try:
-        # TODO(B-perf): a compression-aware contraction tree (cotengra
-        # HyperCompressedOptimizer) would avoid the "tree not compressed" notice;
-        # 'auto' is correct (B0-validated) but not the most efficient order.
-        r = tn.contract_compressed("auto", output_inds=(f"i{out_ix}",), **opts)
-    except Exception as e:  # noqa: BLE001
-        raise CuTensorNetContractionError(
-            f"approximate one-shot contraction failed ({type(e).__name__}: {e}). "
-            "Consider manual time-window blocking (time_windows=N) to bound memory, "
-            "or relax cutoff/max_bond."
-        ) from e
-    return cp.asnumpy(r.data if hasattr(r, "data") else r), None
-
-
-def reduced_density_matrix(model, expander, eps, n_steps, *, mode, pathfinder,
-                           max_bond, cutoff, cutoff_mode, sub_baths, executor, dist=None):
+def reduced_density_matrix(model, expander, eps, n_steps, *, pathfinder, sub_baths,
+                           executor, dist=None):
     """Assemble + contract the 2D net once → ``(rho, metrics)`` at time ``n_steps``.
 
-    ``dist`` (set only for multi-GPU exact runs) distributes the contraction across
-    the MPI ranks via cuTensorNet.
+    Track 2 is the **exact** route (no truncation). ``dist`` (set for multi-GPU)
+    distributes the contraction across the MPI ranks via cuTensorNet.
     """
     operands, modes, out_modes, meta = build_2d_network(
         model, expander, eps, n_steps, sub_baths=sub_baths)
     d = meta["d"]
-    if mode == "exact":
-        if executor == "numpy":
-            vec, info = _contract_exact_numpy(operands, modes, out_modes)
-        else:
-            vec, info = _contract_exact_cuquantum(operands, modes, out_modes,
-                                                  pathfinder=pathfinder, dist=dist)
-        rho = np.asarray(vec).reshape(d, d)
-        return rho, error_metrics(rho, optimizer_info=info)
-    if mode == "approx":
-        if executor == "numpy":
-            raise CuTensorNetContractionError(
-                "approximate mode requires the cuQuantum executor (backend='hpc'); "
-                "the numpy executor is exact-only (local tests).")
-        vec, trunc = _contract_approx_cuquantum(
-            operands, modes, out_modes, max_bond=max_bond, cutoff=cutoff,
-            cutoff_mode=cutoff_mode, pathfinder=pathfinder)
-        rho = np.asarray(vec).reshape(d, d)
-        return rho, error_metrics(rho, truncation=trunc)
-    raise ValueError(f"unknown hpc mode {mode!r}; under backend='hpc' compress_decomp "
-                     "is 'exact' (no knobs) or 'approx' (cutoff knobs)")
+    if executor == "numpy":
+        vec, info = _contract_exact_numpy(operands, modes, out_modes)
+    else:
+        vec, info = _contract_exact_cuquantum(operands, modes, out_modes,
+                                              pathfinder=pathfinder, dist=dist)
+    rho = np.asarray(vec).reshape(d, d)
+    return rho, error_metrics(rho, optimizer_info=info)
 
 
 # --------------------------------------------------------------------------
@@ -375,11 +331,10 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
     The **density operator** is the primary output: ``density_matrices`` holds
     ρ(t) for t = eps..T (and ``final_rho`` = ρ(T)). The channel expectation
     ``polarization`` = ⟨S_channel(t)⟩ is derived only if ``channel`` is given
-    (mirroring Track 1, where you pick a channel). ``error_metrics`` (always, exact
-    and approx) reports ‖ρ−ρ†‖ / |Tr ρ−1| (+ optimizer slices/flops or discarded
-    weight) for the final state. The history is built by contracting the net per
-    step (m=1..N) — O(N) contractions, an HPC optimization target; ρ(T) is the
-    validated quantity.
+    (mirroring Track 1, where you pick a channel). ``error_metrics`` reports
+    ‖ρ−ρ†‖ / |Tr ρ−1| (+ the optimizer slice/flop count) for the final state. The
+    history is built by contracting the net per step (m=1..N) — O(N) contractions,
+    an HPC optimization target; ρ(T) is the validated quantity.
     """
     if model.bath_type != "separable":
         raise NotImplementedError(
@@ -392,20 +347,14 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
 
     expander = _make_expander(config.expansion_order)
 
-    mode = _resolve_mode(config.compress_decomp)
     pathfinder = getattr(config, "pathfinder", "cuquantum")
     N = config.n_steps
 
-    # multi-GPU: cuTensorNet distributes the EXACT contraction across MPI ranks
+    # multi-GPU: cuTensorNet distributes the exact contraction across the MPI ranks
     # (one GPU each), auto-detected from the launcher; None for a single process.
     dist = None
     mpi_ctx = _mpi_context() if executor != "numpy" else None
     if mpi_ctx is not None:
-        if mode != "exact":
-            raise NotImplementedError(
-                "multi-GPU is currently only for compress_decomp='exact' (cuTensorNet "
-                "distributed contraction); 'approx' (quimb contract_compressed) is "
-                "single-GPU — run exact, or launch a single process.")
         dist = _make_dist(mpi_ctx)
 
     try:
@@ -413,10 +362,8 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
         metrics_last = None
         for m in range(1, N + 1):
             rho, metrics = reduced_density_matrix(
-                model, expander, config.eps, m, mode=mode, pathfinder=pathfinder,
-                max_bond=config.max_bond, cutoff=config.cutoff,
-                cutoff_mode=config.cutoff_mode, sub_baths=config.sub_baths,
-                executor=executor, dist=dist)
+                model, expander, config.eps, m, pathfinder=pathfinder,
+                sub_baths=config.sub_baths, executor=executor, dist=dist)
             rhos.append(rho)
             metrics_last = metrics
     finally:
@@ -431,19 +378,10 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
         pol = np.array([float(np.trace(Sop @ r).real) for r in rhos])
     return dict(
         times=times, density_matrices=rhos, final_rho=rhos[-1],
-        polarization=pol, error_metrics=metrics_last, mode=mode, pathfinder=pathfinder,
+        polarization=pol, error_metrics=metrics_last, mode="exact", pathfinder=pathfinder,
         ngpu=(dist["size"] if dist is not None else 1),
         rank=(dist["rank"] if dist is not None else 0),
     )
-
-
-def _resolve_mode(compress_decomp: str) -> str:
-    """Map the `hpc` ``compress_decomp`` value to a contraction mode."""
-    if compress_decomp in ("exact", "approx"):
-        return compress_decomp
-    raise ValueError(
-        f"under backend='hpc', compress_decomp must be 'exact' (no knobs) or "
-        f"'approx' (cutoff knobs), got {compress_decomp!r}")
 
 
 def _make_expander(order: int):

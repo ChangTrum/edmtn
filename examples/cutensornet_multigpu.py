@@ -2,7 +2,7 @@
 
     srun --mpi=pmi2 --ntasks=4 python examples/cutensornet_multigpu.py
 
-Each rank calls the unified ``solve(backend='hpc', compress_decomp='exact')``; the
+Each rank calls the unified ``solve(backend='hpc')`` (Track 2 = exact 2D); the
 2D EDM contraction is distributed across the 4×A800 by cuTensorNet (auto-detected
 from the MPI launcher). Rank 0 checks the result against the Track-1 exact fold and
 prints the backend label (should show ``/4gpu``) + the optimizer slice count.
@@ -23,8 +23,7 @@ def main() -> int:
 
     K, N, order = 4, 6, 1
     model = GaudinModel(g=1.0, K=K, time_step_order=order)
-    res = solve(model, T=N * 0.1, eps=0.1, channel=3,
-                backend="hpc", compress_decomp="exact")
+    res = solve(model, T=N * 0.1, eps=0.1, channel=3, backend="hpc")
 
     if rank != 0:
         return 0

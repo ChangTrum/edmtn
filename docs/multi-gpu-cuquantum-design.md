@@ -1,10 +1,27 @@
 # Track 2 — cuQuantum (cuTensorNet) HPC track: design & status
 
-Status: **design settled (2026-06-28); Phase A DONE.** This is the authoritative
-Track 2 record. Track 1 (the portable, validated quimb pipeline on `main`) is the
-default + correctness anchor and stays byte-for-byte unchanged and cuQuantum-free.
-The full phase plan lives in the approved plan file `sharded-wishing-blossom.md`;
-this doc carries the design rationale + per-phase evidence.
+> **STATUS UPDATE (2026-06-29): Track 2 is EXACT-ONLY.** The original two-mode plan
+> (exact + approx) is retired. The exact 2D contraction is validated single- and
+> multi-GPU (≤1.9e-15 vs Track 1; 4×A800 distributed, job 46508). The **approx mode
+> was dropped** after both cuTensorNet truncation routes proved unworkable:
+> (1) the MPS-method `NetworkState`/`MPSConfig` is **single-GPU only** — cuTensorNet
+> distributes only the contraction-based `TNConfig` (exact) path; and
+> (2) its final-state computation **int-overflows ("Negative dimensions") for ≳17–23
+> time sites, independent of bond dimension** (sweep job 46518: N=16 OK, N=24 FAIL,
+> N=90 fails even at `max_bond=64`). The truncated/approximate regime is a sequential
+> boundary-MPS sweep — exactly Track 1's quimb fold, which already scales to large
+> N/K — so Track 2 adds nothing there and now exposes **no truncation knobs**
+> (`compress_decomp`/`cutoff`/`cutoff_mode`/`max_bond` are N/A under `hpc`). Track 2's
+> value is the **exact** lever: a far larger contraction-order search (precision) and
+> native multi-GPU slicing (capacity for the exponential exact contraction). Sections
+> below describing an `approx` mode are historical.
+
+Status: **design settled (2026-06-28); Phases A/B0/C0/C1 DONE; C2 resolved to
+exact-only (2026-06-29).** This is the authoritative Track 2 record. Track 1 (the
+portable, validated quimb pipeline on `main`) is the default + correctness anchor and
+stays byte-for-byte unchanged and cuQuantum-free. The full phase plan lives in the
+approved plan file `sharded-wishing-blossom.md`; this doc carries the design rationale
++ per-phase evidence.
 
 Track 2 is the **HPC-only** track: it exists to push **precision** and run **large
 heavy** jobs by squeezing NVIDIA hardware. It does **not** reuse Track 1's

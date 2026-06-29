@@ -106,7 +106,7 @@ res.times, res.polarization   # t, <S_z(t)>  (res.mps.bond_dims is D_t)
 | `cutoff_mode` | `rel`, `rsum2`, `abs`, … (`rel`) | quimb truncation rule (`rel` = `s_i/s_max < ξ`; the built-in closest to the retired `rel_ref`) |
 | `max_bond` | int or `None` (`None`) | hard bond-dimension cap |
 | `compress_method` | `zipup`, `dm`, `direct` (`zipup`) | quimb 1D-compress algorithm |
-| `compress_decomp` | cpu/gpu: `exact`,`rsvd`; **hpc: `exact`,`approx`** (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + guard). Under `hpc`: `exact` = no truncation (no knobs), `approx` = cutoff-truncated |
+| `compress_decomp` | cpu/gpu: `exact`,`rsvd` (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + guard). *N/A under `hpc`* (Track 2 is exact-only) |
 | `compress_decomp_q` | int (`2`) | rSVD power iterations (`2` = cold/robust, `0` = single-pass/fast). *N/A under `hpc`* |
 | `compress_canon` | `quimb`, `householder`, `cholqr` (`quimb`) | canonicalisation QR. *N/A under `hpc`* |
 | `preset` | `balanced`, `robust`, `None` (`None`) | fills the recommended decomposition (cpu/gpu only) |
@@ -151,30 +151,31 @@ wheel — see *Environment*). GPU pays off once the bond is large; small problem
 CPU-competitive. The compute is backend-agnostic (autoray), so results agree across
 devices to round-off.
 
-**HPC track (`backend='hpc'`).** A separate, NVIDIA-GPU-only track for precision and
-large heavy jobs. Instead of Track 1's sequential fold-then-compress, it lays the
+**HPC track (`backend='hpc'`).** A separate, NVIDIA-GPU-only track for **precision and
+multi-GPU capacity**. Instead of Track 1's sequential fold-then-compress, it lays the
 whole separable-bath EDM out as a **2D space×time tensor network** (paper Sec. V) and
-contracts it **in one shot with cuQuantum (cuTensorNet)**, which owns path search,
-slicing, hardware scheduling, and execution (cotengra stays a selectable fallback
-path-finder; everything routes through quimb). Two modes via `compress_decomp`:
-`exact` (genuinely no truncation, no knobs) and `approx` (cutoff/cutoff_mode/max_bond).
+contracts it **exactly, in one shot, with cuQuantum (cuTensorNet)**, which owns path
+search, slicing, hardware scheduling, and execution (cotengra stays a selectable
+fallback path-finder). This is the **exact route only** — genuinely no truncation, no
+knobs; the 2D framing buys a far larger contraction-order search and **native multi-GPU
+slicing** (one MPI rank per GPU) for the exponentially-growing exact contraction. The
+**truncated/approximate regime stays in Track 1** (`backend='cpu'`/`'gpu'`), whose
+quimb fold already scales to large N/K — cuTensorNet's MPS-method adds nothing there
+(single-GPU, and it breaks past ~20 time steps), so the Track-1 truncation knobs
+(`compress_decomp`, `cutoff`, `cutoff_mode`, `max_bond`, …) are **N/A under `hpc`**.
 The **density operator ρ(t) is returned first-class** (`result.density_matrices`), the
-channel polarization is derived only if `channel` is given, and **both modes report
-reference error metrics** (`result.error_metrics`: ‖ρ−ρ†‖, |Tr ρ−1|, plus optimizer
-slices/flops or discarded weight). One-shot failures (precision unreachable / slicing /
-OOM) raise an explicit error pointing to manual time-window blocking — no silent
-fallback. Needs `cuquantum-python-cu12`; never imported on the Track-1 (CPU/Win/Mac)
-path. Design + status: [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+channel polarization is derived only if `channel` is given, and **error metrics** are
+reported (`result.error_metrics`: ‖ρ−ρ†‖, |Tr ρ−1|, optimizer slices/flops). Needs
+`cuquantum-python-cu12`; never imported on the Track-1 (CPU/Win/Mac) path. Design +
+status: [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
 
 ```python
-# exact: no truncation, cuTensorNet owns path+slicing; ρ(t) + error metrics returned
-res = solve(GaudinModel(g=1.0, K=24), T=6.0, eps=0.1, channel=3,
-            backend='hpc', compress_decomp='exact')
+# exact 2D contraction; cuTensorNet owns path+slicing; ρ(t) + error metrics returned
+res = solve(GaudinModel(g=1.0, K=12), T=0.6, eps=0.1, channel=3, backend='hpc')
 res.density_matrices, res.error_metrics      # ρ(t), {hermiticity, trace_dev, num_slices, …}
 
-# approx: cutoff-truncated through quimb
-res = solve(GaudinModel(g=1.0, K=24), T=6.0, eps=0.1, channel=3,
-            backend='hpc', compress_decomp='approx', cutoff=1e-8, max_bond=400)
+# multi-GPU (4 ranks, one GPU each); cuTensorNet distributes the slices:
+#   srun --mpi=pmi2 --ntasks=4 python your_script.py
 ```
 
 ## Performance & design notes
