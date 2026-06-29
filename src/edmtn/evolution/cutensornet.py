@@ -170,7 +170,7 @@ def _contract_exact_numpy(operands, modes, out_modes):
     whereas opt_einsum ``'auto'`` finds the grid/boundary path in ~ms (verified to
     K=4,N=10). The GPU path uses cuTensorNet's own optimizer, which is unaffected.
     """
-    import opt_einsum as oe  # noqa: PLC0415 - quimb/cotengra dependency, always present
+    import opt_einsum as oe  # noqa: PLC0415 - lazy (numpy executor only); not in every env
     args = []
     for op, md in zip(operands, modes):
         args += [op, list(md)]
@@ -243,6 +243,10 @@ def _make_dist(mpi_ctx):
     if mpi_ctx is None:
         return None
     comm, rank, size = mpi_ctx
+    # cross-node seam (Phase D): single-node is the validated path; multi-node is the
+    # same cuTensorNet code path but unvalidated, so it's gated (EDMTN_ALLOW_MULTINODE).
+    from ..backend.process_group import ProcessGroup  # noqa: PLC0415
+    ProcessGroup.from_comm(comm).require_supported()
     _resolve_comm_lib()  # sets CUTENSORNET_COMM_LIB or raises with build instructions
     import cupy as cp  # noqa: PLC0415
     from cupy.cuda.runtime import getDeviceCount  # noqa: PLC0415
