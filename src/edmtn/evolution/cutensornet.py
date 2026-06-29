@@ -15,7 +15,7 @@ and already scales to large N/K; cuTensorNet adds nothing there (its MPS-method
 ``NetworkState`` is single-GPU and int-overflows past ~20 time sites). So ``backend=
 "hpc"`` has **no** truncation mode at all — the Track-1 knobs (``compress_decomp``,
 ``cutoff``, ``cutoff_mode``, ``max_bond``, ...) are N/A here. See
-``docs/multi-gpu-cuquantum-design.md`` for the evidence.
+``docs/design/multi-gpu-cuquantum-design.md`` for the evidence.
 
 The contraction-**path-finder** is selectable (``pathfinder``): ``"cuquantum"``
 (default — cuTensorNet's own optimizer) or ``"cotengra"`` (cotengra finds the path,
@@ -28,7 +28,7 @@ so Track 1 (CPU / Windows / macOS) never imports them.
 Geometry (validated to ≤2.4e-15 vs Track 1's exact fold, locally and on c1): a
 ``(1 system + K sub-bath) × T`` grid with d²=4 system bond, ``D_a``=4 lateral bath
 bonds, d_phys=7 vertical legs, top arms closed by δ⁰. GPU validation lives in
-``examples/cutensornet_sanity.py``.
+``examples/track2/cutensornet_sanity.py``.
 """
 
 from __future__ import annotations

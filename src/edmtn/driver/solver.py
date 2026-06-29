@@ -91,7 +91,7 @@ class EDMSolver:
         sequential medium SVD/QR calls with Python orchestration between them,
         where the CPU beats the GPU at the bond dimensions these phases reach
         (benchmarks in ``tests/benchmarks/perf_*`` and the analysis
-        in ``docs/cpu-vs-gpu-edm.md``).  The GPU stays a first-class, validated
+        in ``docs/benchmarks/cpu-vs-gpu-edm.md``).  The GPU stays a first-class, validated
         option via explicit ``backend='gpu'`` -- it becomes the faster path once
         the Phase-3 decomposition layer (randomized / single-pass SVD) shifts the
         work onto large GEMM-bound operations.  Falls back to CPU (never raises)

@@ -176,6 +176,66 @@ def test_invalid_construction(kw):
 
 
 # --------------------------------------------------------------------------
+# selectable coupling profiles
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind", ["linear", "uniform", "exp", "random"])
+def test_named_profiles_normalised_and_descending(kind):
+    g, K = 1.3, 24
+    m = GaudinModel(g=g, K=K, coupling=kind)
+    gk = m.couplings
+    assert gk.shape == (K,)
+    assert m.coupling == kind
+    np.testing.assert_allclose(np.sum(gk**2), g**2, rtol=1e-12)  # sum g_k^2 = g^2
+    assert np.all(np.diff(gk) <= 1e-12)                          # descending
+
+
+def test_default_is_linear():
+    a = GaudinModel(g=1.0, K=20).couplings
+    b = GaudinModel(g=1.0, K=20, coupling="linear").couplings
+    np.testing.assert_array_equal(a, b)
+    np.testing.assert_allclose(a, linear_couplings(1.0, 20))
+
+
+def test_uniform_profile_is_flat():
+    gk = GaudinModel(g=2.0, K=16, coupling="uniform").couplings
+    np.testing.assert_allclose(gk, 2.0 / np.sqrt(16))
+
+
+def test_exp_profile_beta_controls_decay():
+    slow = GaudinModel(g=1.0, K=30, coupling="exp", coupling_params={"beta": 0.05}).couplings
+    fast = GaudinModel(g=1.0, K=30, coupling="exp", coupling_params={"beta": 0.5}).couplings
+    # both normalised; faster decay concentrates weight -> larger leading coupling
+    assert fast[0] > slow[0]
+    np.testing.assert_allclose(np.sum(fast**2), 1.0, rtol=1e-12)
+
+
+def test_random_profile_seed_reproducible_and_varies():
+    a = GaudinModel(g=1.0, K=20, coupling="random", coupling_params={"seed": 7}).couplings
+    b = GaudinModel(g=1.0, K=20, coupling="random", coupling_params={"seed": 7}).couplings
+    c = GaudinModel(g=1.0, K=20, coupling="random", coupling_params={"seed": 8}).couplings
+    np.testing.assert_array_equal(a, b)
+    assert not np.allclose(a, c)
+
+
+def test_explicit_coupling_array_used_verbatim():
+    custom = np.linspace(1.0, 0.1, 12)
+    m = GaudinModel(g=1.0, K=12, coupling=custom)
+    assert m.coupling == "custom"
+    np.testing.assert_array_equal(m.couplings, custom)
+
+
+def test_explicit_coupling_wrong_length_rejected():
+    with pytest.raises(ValueError):
+        GaudinModel(g=1.0, K=12, coupling=np.ones(5))
+
+
+def test_unknown_profile_rejected():
+    with pytest.raises(ValueError):
+        GaudinModel(g=1.0, K=10, coupling="nonsense")
+
+
+# --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
 

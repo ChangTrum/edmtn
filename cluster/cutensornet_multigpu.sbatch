@@ -21,4 +21,4 @@ export CUTENSORNET_COMM_LIB="$SP/cuquantum/distributed_interfaces/libcutensornet
 export LD_PRELOAD="/home/apps/mpich/lib/libmpi.so"   # MPICH+Python symbol-visibility fix
 
 echo "host: $(hostname)"; nvidia-smi --query-gpu=index,name --format=csv,noheader
-srun --mpi=pmi2 env PYTHONPATH=src python examples/cutensornet_multigpu.py
+srun --mpi=pmi2 env PYTHONPATH=src python examples/track2/cutensornet_multigpu.py

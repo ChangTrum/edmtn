@@ -19,11 +19,15 @@ rather than cumulants.
 
 The central spin starts polarised along ``+z`` (``rho(0) = S_z + 1/2``); each
 bath spin starts at infinite temperature, i.e. maximally mixed (``I/2``,
-unpolarised).  The couplings follow the paper's linearly decreasing profile
+unpolarised).  By default the couplings follow the paper's linearly decreasing
+profile
 
     g_k = g * sqrt(6K / (2K^2 + 3K + 1)) * (K + 1 - k) / K,   k = 1..K,
 
-normalised so that ``sum_k g_k^2 = g^2``.
+normalised so that ``sum_k g_k^2 = g^2``.  Other profiles (``uniform``, ``exp``,
+``random``, or an explicit array) are selectable via the ``coupling`` argument --
+see :data:`COUPLING_PROFILES` -- to study how the EDM's structure depends on the
+*shape* of the coupling distribution rather than the model itself.
 """
 
 from __future__ import annotations
@@ -41,16 +45,79 @@ _SZ = np.array([[0.5, 0.0], [0.0, -0.5]], dtype=np.complex128)
 _ID = np.eye(2, dtype=np.complex128)
 
 
+def _check_K(K: int) -> None:
+    if K < 1:
+        raise ValueError("K must be a positive integer")
+
+
+def _normalise_descending(c: np.ndarray, g: float) -> np.ndarray:
+    """Sort descending and rescale so ``sum_k g_k**2 == g**2``."""
+    c = np.sort(np.asarray(c, dtype=np.float64))[::-1]
+    s = float(np.sum(c**2))
+    if s <= 0:
+        raise ValueError("coupling profile has zero norm")
+    return c * (g / np.sqrt(s))
+
+
 def linear_couplings(g: float, K: int) -> np.ndarray:
-    """Paper's linearly decreasing coupling profile ``g_k`` (length ``K``).
+    """Paper's linearly decreasing coupling profile ``g_k`` (length ``K``, descending).
 
     Normalised so that ``sum_k g_k**2 == g**2``.
     """
-    if K < 1:
-        raise ValueError("K must be a positive integer")
+    _check_K(K)
     k = np.arange(1, K + 1, dtype=np.float64)
     norm = np.sqrt(6.0 * K / (2.0 * K**2 + 3.0 * K + 1.0))
     return g * norm * (K + 1.0 - k) / K
+
+
+def uniform_couplings(g: float, K: int) -> np.ndarray:
+    """Flat profile ``g_k = g / sqrt(K)`` (length ``K``); ``sum_k g_k**2 == g**2``."""
+    _check_K(K)
+    return np.full(K, g / np.sqrt(K), dtype=np.float64)
+
+
+def exponential_couplings(g: float, K: int, beta: float = 0.15) -> np.ndarray:
+    """Geometric decay ``g_k ~ exp(-beta*k)`` (descending), normalised to ``g**2``."""
+    _check_K(K)
+    if beta <= 0:
+        raise ValueError("beta must be positive")
+    c = np.exp(-beta * np.arange(K, dtype=np.float64))
+    return _normalise_descending(c, g)
+
+
+def random_couplings(g: float, K: int, seed: int = 0,
+                     low: float = 0.0, high: float = 1.0) -> np.ndarray:
+    """Disordered profile ``g_k ~ Uniform(low, high)`` (sorted descending), norm ``g**2``.
+
+    The absolute scale of ``[low, high)`` is irrelevant after normalisation; only the
+    *shape* of the draw matters.  ``seed`` selects the realisation.
+    """
+    _check_K(K)
+    c = np.random.default_rng(seed).uniform(low, high, size=K)
+    return _normalise_descending(c, g)
+
+
+COUPLING_PROFILES = {
+    "linear": linear_couplings,
+    "uniform": uniform_couplings,
+    "exp": exponential_couplings,
+    "random": random_couplings,
+}
+
+
+def coupling_profile(kind: str, g: float, K: int, **params) -> np.ndarray:
+    """Return the named coupling profile ``g_k`` (descending, ``sum g_k**2 == g**2``).
+
+    ``kind`` is one of :data:`COUPLING_PROFILES`; ``params`` are the profile's own
+    knobs (``beta`` for ``exp``; ``seed``/``low``/``high`` for ``random``).
+    """
+    try:
+        fn = COUPLING_PROFILES[kind]
+    except KeyError:
+        raise ValueError(
+            f"unknown coupling profile {kind!r}; choose from {sorted(COUPLING_PROFILES)}"
+        ) from None
+    return fn(g, K, **params)
 
 
 @dataclass(frozen=True)
@@ -87,11 +154,22 @@ class GaudinModel(AbstractOQSModel):
         Number of bath spins (paper uses ``K = 49``).
     time_step_order : int
         Small-step expansion order used downstream (default ``2``, as in the paper).
+    coupling : str | array-like
+        The per-sub-bath coupling profile ``g_k``.  Either a named profile from
+        :data:`COUPLING_PROFILES` (``"linear"`` -- the paper default, ``"uniform"``,
+        ``"exp"``, ``"random"``) or an explicit length-``K`` array of couplings.
+        Named profiles are normalised so ``sum_k g_k**2 == g**2`` and returned
+        descending; an explicit array is used verbatim (you own its normalisation).
+    coupling_params : dict, optional
+        Extra knobs for a named profile (``beta`` for ``"exp"``;
+        ``seed``/``low``/``high`` for ``"random"``).  Ignored for explicit arrays.
     """
 
     bath_type = "separable"
 
-    def __init__(self, g: float, K: int, time_step_order: int = 2):
+    def __init__(self, g: float, K: int, time_step_order: int = 2, *,
+                 coupling: str | np.ndarray = "linear",
+                 coupling_params: dict | None = None):
         if g <= 0:
             raise ValueError("g must be positive")
         if K < 1:
@@ -101,9 +179,18 @@ class GaudinModel(AbstractOQSModel):
         self.g = float(g)
         self.K = int(K)
         self.time_step_order = time_step_order
-        self._bath = GaudinBathParams(
-            g=self.g, K=self.K, couplings=linear_couplings(self.g, self.K)
-        )
+        self.coupling_params = dict(coupling_params or {})
+        if isinstance(coupling, str):
+            self.coupling = coupling
+            gk = coupling_profile(coupling, self.g, self.K, **self.coupling_params)
+        else:
+            self.coupling = "custom"
+            gk = np.asarray(coupling, dtype=np.float64)
+            if gk.shape != (self.K,):
+                raise ValueError(
+                    f"explicit couplings must have length K={self.K}, got shape {gk.shape}"
+                )
+        self._bath = GaudinBathParams(g=self.g, K=self.K, couplings=gk)
 
     # -- system ------------------------------------------------------------
 

@@ -3,7 +3,7 @@
 These run locally (no GPU / cuQuantum): the `executor="numpy"` path exercises the
 2D assembly, the per-step ρ(t) history, the error metrics, and the driver wiring.
 The cuQuantum executor (exact, single- and multi-GPU) is validated on c1 by
-``examples/cutensornet_sanity.py``. Track 2 is the exact route only — the truncated
+``examples/track2/cutensornet_sanity.py``. Track 2 is the exact route only — the truncated
 regime lives in Track 1.
 """
 

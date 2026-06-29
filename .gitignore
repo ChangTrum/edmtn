@@ -19,15 +19,15 @@ htmlcov/
 venv/
 env/
 
-# Benchmark / example outputs (regenerable)
+# Benchmark / example outputs (regenerable) -- any data/ or pictures/ under examples/
 *.npz
-examples/data/
-examples/pictures/
+examples/**/data/
+examples/**/pictures/
 
 # Context-only docs (not part of the project): private technical plan and the
 # public arXiv preprint PDF. The tracked docs/*.md dev-notes stay versioned.
-docs/edm_technical_plan.md
-docs/*.pdf
+docs/**/edm_technical_plan.md
+docs/**/*.pdf
 
 # Editor / OS
 .vscode/

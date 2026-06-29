@@ -24,7 +24,7 @@ chain by one new time-site per step (:meth:`QuimbEDM.step`); both then share
 The fold/step reproduce the **two-stage** path (the per-site contraction that
 ``_apply_sub_bath`` / ``apply_step`` do with ``tensordot``, then a quimb
 compression) -- *not* a fused single-pass apply, which the Phase-0 ledger showed
-keeps ~2x the bond and is slower (``docs/phase0-replatform-decisions.md``).  So the
+keeps ~2x the bond and is slower (``docs/design/phase0-replatform-decisions.md``).  So the
 kernel is contracted into the EDM exactly (forming the fused ``a*chi`` bond),
 parallel bonds are fused, and only then is the chain compressed (zipup, a
 quimb-native ``rel`` cutoff by default).  This keeps the observable ``<S_z(t)>``

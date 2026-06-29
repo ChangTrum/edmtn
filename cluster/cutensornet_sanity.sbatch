@@ -19,4 +19,4 @@ cd /home/user/cchen1/edmtn
 echo "host: $(hostname)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 
-PYTHONPATH=src python examples/cutensornet_sanity.py
+PYTHONPATH=src python examples/track2/cutensornet_sanity.py

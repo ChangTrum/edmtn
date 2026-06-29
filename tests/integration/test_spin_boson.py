@@ -1,6 +1,6 @@
 """Integration smoke test: the spin-boson (Gaussian) pipeline runs end-to-end.
 
-Not a reproduction -- that lives in ``examples/reproduce_fig4.py``.  Here we just
+Not a reproduction -- that lives in ``examples/reproduce/reproduce_fig4.py``.  Here we just
 check, at a small/fast resolution, that the whole stack (model -> cumulants ->
 kernel -> expansion -> evolution -> observables -> driver) runs and returns
 physically sane output for both expansion orders.

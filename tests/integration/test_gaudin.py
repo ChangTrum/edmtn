@@ -1,6 +1,6 @@
 """Integration smoke test: the Gaudin (separable) pipeline runs end-to-end.
 
-Not a reproduction -- Fig. 6/11/12 live in ``examples/reproduce_fig6.py``.  Here
+Not a reproduction -- Fig. 6/11/12 live in ``examples/reproduce/reproduce_fig6.py``.  Here
 we check, at a small/fast size, that the separable outer-loop stack (Gaudin model
 -> separable correlation -> separable kernel -> outer-loop evolution ->
 all-times polarization -> driver) runs and returns physically sane output, and

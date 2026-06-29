@@ -7,7 +7,16 @@ Importing this package registers the available models with
 from __future__ import annotations
 
 from .base import AbstractOQSModel
-from .gaudin import GaudinBathParams, GaudinModel, linear_couplings
+from .gaudin import (
+    COUPLING_PROFILES,
+    GaudinBathParams,
+    GaudinModel,
+    coupling_profile,
+    exponential_couplings,
+    linear_couplings,
+    random_couplings,
+    uniform_couplings,
+)
 from .registry import ModelRegistry
 from .spin_boson import SpinBosonBathParams, SpinBosonModel
 
@@ -21,5 +30,10 @@ __all__ = [
     "SpinBosonBathParams",
     "GaudinModel",
     "GaudinBathParams",
+    "COUPLING_PROFILES",
+    "coupling_profile",
     "linear_couplings",
+    "uniform_couplings",
+    "exponential_couplings",
+    "random_couplings",
 ]

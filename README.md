@@ -122,7 +122,7 @@ If you run `hpc` on a single GPU (or the problem is small enough to fit one card
 edmtn warns and suggests scaling up or using Track 1 — it still works, it just isn't
 where `hpc` pays off. Ready-to-edit launch scripts live in
 [`cluster/`](cluster/). Design + status:
-[docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+[docs/design/multi-gpu-cuquantum-design.md](docs/design/multi-gpu-cuquantum-design.md).
 
 ## Package layout
 
@@ -143,9 +143,9 @@ edmtn/
 │   │   └── mps_utils.py        #   EDMMPS container, apply_step, dense brute-force reference
 │   ├── observables/            # Layer 6: observable extraction + convergence
 │   └── driver/                 # Layer 7: orchestration (EDMSolver, SolverConfig, presets)
-├── examples/                   # reproductions / studies (reproduce_fig4.py, reproduce_fig6.py, …)
+├── examples/                   # reproduce/ (paper figs), studies/ (physics), track2/ (cuQuantum), smoke/
 ├── tests/                      # unit / integration; benchmarks/ holds perf_*.py scripts
-└── docs/                       # design decisions, benchmarks, environment notes
+└── docs/                       # reference/, design/, benchmarks/, research/, guides/, troubleshooting/
 ```
 
 ## Configuration (tuning knobs)
@@ -184,7 +184,7 @@ a randomized SVD whose power-iteration count is `compress_decomp_q` (`2` cold, `
 single-pass); a **silent resolution guard** falls back to exact full SVD when the
 randomized result is under-resolved, so it is never less reliable than full SVD.
 
-**Presets** (details in [docs/recommended-config.md](docs/recommended-config.md)):
+**Presets** (details in [docs/guides/recommended-config.md](docs/guides/recommended-config.md)):
 
 ```python
 # preset='balanced' -> single-pass rSVD (q=0): fastest, accuracy < ξ
@@ -206,19 +206,19 @@ For when to pick which — and how `hpc` differs (exact, multi-GPU, no truncatio
 knobs) — see **[Which backend?](#which-backend)** above. Under the hood, the `hpc`
 track lays the whole problem out as a 2D space×time network and contracts it exactly
 with cuQuantum/cuTensorNet; design + status:
-[docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+[docs/design/multi-gpu-cuquantum-design.md](docs/design/multi-gpu-cuquantum-design.md).
 
 ## Performance & design notes
 
 - **Re-platform decision ledger** (what was replaced/retired and why):
-  [docs/phase0-replatform-decisions.md](docs/phase0-replatform-decisions.md).
+  [docs/design/phase0-replatform-decisions.md](docs/design/phase0-replatform-decisions.md).
 - **Recommended presets** (balanced vs robust):
-  [docs/recommended-config.md](docs/recommended-config.md).
+  [docs/guides/recommended-config.md](docs/guides/recommended-config.md).
 - **GPU scaling** (single A800 vs EPYC-9754):
-  [docs/gpu-scaling-benchmark.md](docs/gpu-scaling-benchmark.md).
-- **CPU vs GPU** trade-off: [docs/cpu-vs-gpu-edm.md](docs/cpu-vs-gpu-edm.md).
+  [docs/benchmarks/gpu-scaling-benchmark.md](docs/benchmarks/gpu-scaling-benchmark.md).
+- **CPU vs GPU** trade-off: [docs/benchmarks/cpu-vs-gpu-edm.md](docs/benchmarks/cpu-vs-gpu-edm.md).
 - **Distributed scale-out** (multi-GPU + cuQuantum, two-track design):
-  [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+  [docs/design/multi-gpu-cuquantum-design.md](docs/design/multi-gpu-cuquantum-design.md).
 
 ## Environment
 
@@ -229,17 +229,17 @@ Windows/macOS/Linux needs nothing extra.
 On a CUDA machine, add a CuPy wheel matching your CUDA toolkit to enable
 `backend='gpu'`, e.g. `pip install cupy-cuda12x` (CUDA 12.x). The GPU path applies
 two small compatibility shims for quimb-on-CuPy automatically
-(see [docs/quimb-cupy-namespace-bug.md](docs/quimb-cupy-namespace-bug.md)).
+(see [docs/troubleshooting/quimb-cupy-namespace-bug.md](docs/troubleshooting/quimb-cupy-namespace-bug.md)).
 
 For `backend='hpc'` (NVIDIA only) also install `cuquantum-python-cu12`. Multi-GPU
 needs an MPI launcher (`srun`/`mpirun`) and the cuTensorNet MPI wrapper — the
 `cluster/` launch scripts set the required env (`CUTENSORNET_COMM_LIB`,
-`LD_PRELOAD`); see [docs/multi-gpu-cuquantum-design.md](docs/multi-gpu-cuquantum-design.md).
+`LD_PRELOAD`); see [docs/design/multi-gpu-cuquantum-design.md](docs/design/multi-gpu-cuquantum-design.md).
 None of this is imported on the CPU / Track-1 path, so CPU-only installs stay clean.
 
 On some Windows quimb envs, set `MKL_THREADING_LAYER=TBB` before NumPy is imported
 to avoid an OpenMP-runtime clash (`conda env config vars set MKL_THREADING_LAYER=TBB
--n quimb`); see [docs/mkl-tbb-threading-layer.md](docs/mkl-tbb-threading-layer.md).
+-n quimb`); see [docs/troubleshooting/mkl-tbb-threading-layer.md](docs/troubleshooting/mkl-tbb-threading-layer.md).
 
 ## Running the tests
 
@@ -255,9 +255,9 @@ so no install is required; alternatively `pip install -e .`.
 ## Examples
 
 ```
-python examples/reproduce_fig4.py --quick      # spin-boson Fig. 4a/4b
-python examples/reproduce_fig6.py --quick      # Gaudin Fig. 6a/6b
-python examples/retire_gpu_smoke.py            # GPU node: validate the pipeline on CuPy
+python examples/reproduce/reproduce_fig4.py --quick   # spin-boson Fig. 4a/4b
+python examples/reproduce/reproduce_fig6.py --quick   # Gaudin Fig. 6a/6b
+python examples/smoke/retire_gpu_smoke.py             # GPU node: validate the pipeline on CuPy
 ```
 
 Performance scripts live in `tests/benchmarks/` (named `perf_*.py` so pytest does not

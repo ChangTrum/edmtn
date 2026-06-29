@@ -62,7 +62,7 @@ class SolverConfig:
     compress_decomp: str = "exact"        # cpu/gpu: 'exact'|'rsvd' (N/A under 'hpc': Track 2 is exact-only, no truncation)
     compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass; N/A under 'hpc')
     compress_canon: str = "quimb"         # 'quimb'|'householder'|'cholqr' (canon QR; N/A under 'hpc')
-    preset: str | None = None  # None|'balanced'|'robust' (cpu/gpu only; see docs/recommended-config.md)
+    preset: str | None = None  # None|'balanced'|'robust' (cpu/gpu only; see docs/guides/recommended-config.md)
     sub_baths: int | None = None  # separable bath only: fold/contract just the first L sub-baths (Fig. 6)
     backend: str = "cpu"   # 'cpu'|'gpu' -> numpy/cupy (Track 1); 'hpc' -> cuQuantum 2D contraction
     precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
@@ -71,7 +71,7 @@ class SolverConfig:
     time_windows: int | None = None  # None = one-shot whole-spacetime; int = manual window blocking
     # NB: hpc has no GPU-count knob -- it uses every GPU it is launched across (cuTensorNet
     # is one rank per GPU). Launch one rank per GPU with your own workflow, e.g.
-    # `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>` (see examples/cluster); edmtn
+    # `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>` (see cluster/); edmtn
     # itself does not submit/srun/ssh -- that is the user's job.
 
     def __post_init__(self):
@@ -93,7 +93,7 @@ class SolverConfig:
         return int(round(self.T / self.eps))
 
 
-# Recommended presets (docs/recommended-config.md): both use quimb rSVD, differing
+# Recommended presets (docs/guides/recommended-config.md): both use quimb rSVD, differing
 # only in power iterations -- balanced = single-pass (q=0, fastest), robust = cold
 # (q=2, exact-baseline accuracy).  The silent guard falls back to full SVD either way.
 _PRESETS: dict = {

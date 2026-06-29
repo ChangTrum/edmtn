@@ -29,4 +29,4 @@ nvidia-smi --query-gpu=index,name --format=csv,noheader
 echo "MPICH CUDA-aware? (look for cuda/ucx):"; mpichversion 2>/dev/null | grep -iE 'cuda|ucx|device' || echo "  (mpichversion gave nothing)"
 echo "COMM_LIB=$CUTENSORNET_COMM_LIB"; [ -f "$CUTENSORNET_COMM_LIB" ] && echo "  wrapper present" || echo "  wrapper MISSING"
 
-srun --mpi=pmi2 python examples/cutensornet_mpi_probe.py
+srun --mpi=pmi2 python examples/track2/cutensornet_mpi_probe.py
