@@ -36,6 +36,7 @@ import itertools
 from dataclasses import dataclass, field
 
 import numpy as np
+import opt_einsum as oe
 
 
 def _xp(a):
@@ -204,7 +205,10 @@ def _kernel_dense_advance(kernel_engine, t, C_prev):
     k_sub = "".join(ups) + d_new + "".join(mids)
     c_sub = "".join(mids) + "".join(es)
     out_sub = "".join(ups) + d_new + "".join(es)
-    return np.einsum(f"{k_sub},{c_sub}->{out_sub}", K, C_prev, optimize=True)
+    # opt_einsum (NOT np.einsum optimize=True): finds a good order for this many-axis
+    # dense contraction without numpy's bad-transpose intermediates -- see
+    # evolution/cutensornet.py and [[local-perf-debug-lessons]].
+    return oe.contract(f"{k_sub},{c_sub}->{out_sub}", K, C_prev, optimize="auto")
 
 
 def dense_open_armed_correlation(kernel_engine, n):

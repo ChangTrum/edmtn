@@ -30,6 +30,7 @@ hook used to validate this layer against Layer 2.
 from __future__ import annotations
 
 import numpy as np
+import opt_einsum as oe
 
 from ..cumulants.separable import SeparableCorrelation
 from .base import KernelMPO, KernelProvider, picking_tensor
@@ -79,7 +80,7 @@ class SeparableKernelEngine:
         self.K = correlation.K
         self._P = picking_tensor(self.d_phys)
         # operatorise every sub-bath: op[k, up, down, l, r] = P[up, mid, down] A[k, mid, l, r]
-        self._op = np.einsum("amd,kmlr->kadlr", self._P, correlation.transfer, optimize=True)
+        self._op = oe.contract("amd,kmlr->kadlr", self._P, correlation.transfer, optimize="auto")
 
     @classmethod
     def from_model(cls, model, T: float, eps: float) -> "SeparableKernelEngine":

@@ -13,6 +13,7 @@ cumulants.
 import itertools
 
 import numpy as np
+import opt_einsum as oe
 import pytest
 
 from edmtn.cumulants import GaussianCumulantEngine
@@ -115,7 +116,7 @@ def advance(K_dense, C_prev, t):
     k_sub = "".join(ups) + d_new + "".join(mids)
     c_sub = "".join(mids) + "".join(es)
     out_sub = "".join(ups) + d_new + "".join(es)
-    return np.einsum(f"{k_sub},{c_sub}->{out_sub}", K_dense, C_prev, optimize=True)
+    return oe.contract(f"{k_sub},{c_sub}->{out_sub}", K_dense, C_prev, optimize="auto")
 
 
 # --------------------------------------------------------------------------
