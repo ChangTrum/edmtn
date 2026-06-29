@@ -36,7 +36,6 @@ import itertools
 from dataclasses import dataclass, field
 
 import numpy as np
-import opt_einsum as oe
 
 
 def _xp(a):
@@ -206,8 +205,10 @@ def _kernel_dense_advance(kernel_engine, t, C_prev):
     c_sub = "".join(mids) + "".join(es)
     out_sub = "".join(ups) + d_new + "".join(es)
     # opt_einsum (NOT np.einsum optimize=True): finds a good order for this many-axis
-    # dense contraction without numpy's bad-transpose intermediates -- see
-    # evolution/cutensornet.py and [[local-perf-debug-lessons]].
+    # dense contraction without numpy's bad-transpose intermediates. Imported lazily
+    # (and only here, the brute-force *test* reference) so `import edmtn` never needs
+    # opt_einsum -- it isn't in every env (e.g. the cluster edmtn-gpu).
+    import opt_einsum as oe  # noqa: PLC0415
     return oe.contract(f"{k_sub},{c_sub}->{out_sub}", K, C_prev, optimize="auto")
 
 

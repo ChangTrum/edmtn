@@ -46,7 +46,6 @@ identical to first order, so only the lag map changes.
 from __future__ import annotations
 
 import numpy as np
-import opt_einsum as oe
 
 from ..cumulants.gaussian import GaussianCumulants
 from .base import KernelMPO, KernelProvider, picking_tensor
@@ -153,5 +152,5 @@ class GaussianKernelEngine(KernelProvider):
 
     def _operatorize(self, raw: np.ndarray) -> np.ndarray:
         """Apply the picking tensor: ``T[up, down, l, r] = P[up, mid, down] raw[mid, l, r]``."""
-        # P[up, mid, down], raw[mid, l, r] -> T[up, down, l, r]
-        return oe.contract("amd,mlr->adlr", self._P, raw, optimize="auto")
+        # P[up, mid, down], raw[mid, l, r] -> T[up, down, l, r]  (tiny, one-shot)
+        return np.einsum("amd,mlr->adlr", self._P, raw)
