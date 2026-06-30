@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Coupling-distribution scaling study (Gaudin, Track 1 / CuPy fold) — c1 / single A800.
 #   sbatch --parsable cluster/coupling_dist.sbatch
-# Track 1 only (compressed fold): direct + cold rSVD, cutoff 1e-6 rel, max_bond 1024.
+# Track 1 only (compressed fold): direct + exact decomp, rel cutoff, max_bond 1024.
 # The fold runs on the A800; the per-bond subspace diagnostic runs on host CPU.
+# Tight cutoff (1e-9) lowers the eta floor so the asymptotic alpha->1 tail resolves
+# even for fast-decaying profiles (exp large-beta), which floored at cutoff 1e-6.
 #SBATCH --job-name=coupdist
 #SBATCH --partition=normal
 #SBATCH --nodelist=c1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=03:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/home/user/cchen1/edmtn/coupling_dist_%j.out
 set -euo pipefail
 
@@ -24,6 +26,6 @@ echo "=== GPU smoke (validate the CuPy fold path) ==="
 PYTHONPATH=src python examples/studies/coupling_distributions.py --smoke --device gpu \
     --name coupling_smoke_gpu
 
-echo "=== real run: K=49, T=3, eps=0.2, Track-1 CuPy ==="
+echo "=== real run: K=49, T=3, eps=0.2, tight cutoff 1e-9, Track-1 CuPy ==="
 PYTHONPATH=src python examples/studies/coupling_distributions.py --K 49 --T 3 --eps 0.2 \
-    --seeds 4 --device gpu --name coupling_dist_K49_gpu
+    --seeds 4 --cutoff 1e-9 --device gpu --name coupling_dist_K49_tight

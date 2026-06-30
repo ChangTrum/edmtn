@@ -55,16 +55,23 @@ from edmtn.models import GaudinModel  # noqa: E402
 _DIR_DATA = Path(__file__).resolve().parent / "data" / "coupling_dist"
 _DIR_PICS = Path(__file__).resolve().parent / "pictures" / "coupling_dist"
 
-DISTRIBUTIONS = ("linear", "uniform", "exp", "random")
+DISTRIBUTIONS = ("linear", "uniform", "exp", "random", "ou")
 
 
-def model_for(kind, g, K, *, beta=0.15, seed=0):
+def _floats(s):
+    """Parse a comma-separated list of floats (argparse type)."""
+    return [float(v) for v in str(s).split(",") if v.strip()]
+
+
+def model_for(kind, g, K, *, beta=0.15, seed=0, rho=0.8):
     """Build a GaudinModel with the named coupling profile (first-class model option)."""
     params = {}
     if kind == "exp":
         params["beta"] = beta
     elif kind == "random":
         params["seed"] = seed
+    elif kind == "ou":
+        params["rho"], params["seed"] = rho, seed
     return GaudinModel(g=g, K=K, coupling=kind, coupling_params=params)
 
 
@@ -213,6 +220,18 @@ def powerlaw_fit(x, y):
     return (float(alpha), float(np.exp(lc)), float(r2), int(m.sum()))
 
 
+def tail_fit(x, y, frac=0.5):
+    """Power-law fit on the small-``x`` tail (lowest ``frac`` of x) -- tests whether
+    the exponent approaches the theoretical asymptotic alpha=1 as x -> 0."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    pos = x > 0
+    if pos.sum() < 6:
+        return (np.nan, np.nan, np.nan, int(pos.sum()))
+    thr = np.quantile(x[pos], frac)
+    m = pos & (x <= thr)
+    return powerlaw_fit(x[m], y[m])
+
+
 def critical_Ls(rows, D_a):
     """Smallest L whose fold L->L+1 meets each pure-projection-feasibility criterion."""
     def first(pred):
@@ -265,12 +284,19 @@ def main():
     # NOTE: rSVD is approximate -> adds a little noise to the subspace diagnostic;
     # pass --decomp exact for the cleanest scaling-law fit.
     ap.add_argument("--method", default="direct", choices=("direct", "zipup", "dm"))
-    ap.add_argument("--decomp", default="rsvd", choices=("rsvd", "exact"))
+    # exact decomposition by default: removes rSVD noise from the small-x tail so the
+    # asymptotic alpha->1 test is clean (the restrained precision bump).
+    ap.add_argument("--decomp", default="exact", choices=("rsvd", "exact"))
     ap.add_argument("--decomp-q", type=int, default=2)
     ap.add_argument("--device", default="cpu", choices=("cpu", "gpu"),
                     help="run the fold on CPU (NumPy) or GPU (CuPy / A800)")
-    ap.add_argument("--beta", type=float, default=0.15, help="exp-decay rate")
-    ap.add_argument("--seeds", type=int, default=4, help="random-distribution realisations")
+    ap.add_argument("--exp-betas", type=_floats, default=[0.05, 0.1, 0.2, 0.4],
+                    help="comma-separated exp-decay rates (one curve each)")
+    ap.add_argument("--ou-rhos", type=_floats, default=[0.5, 0.9],
+                    help="comma-separated OU correlations (one curve each)")
+    ap.add_argument("--tail-frac", type=float, default=0.4,
+                    help="fraction of smallest-x points used for the asymptotic-alpha fit")
+    ap.add_argument("--seeds", type=int, default=4, help="random/OU realisations (pooled)")
     ap.add_argument("--name", default="coupling_dist")
     ap.add_argument("--smoke", action="store_true", help="tiny fast config for validation")
     ap.add_argument("--replot", metavar="JSON",
@@ -281,55 +307,58 @@ def main():
         with open(args.replot) as f:
             saved = json.load(f)
         results = {k: {"rows": v["rows"], "fits": v["fits"], "D_a": v["D_a"],
-                       "couplings": v["couplings"]}
+                       "couplings": v["couplings"], "mode": v.get("mode", k)}
                    for k, v in saved["distributions"].items()}
         _plot(results, saved["xi"], saved["meta"].get("name", "coupling_dist"))
         return
 
     if args.smoke:
         args.K, args.T, args.eps, args.seeds, args.max_bond = 10, 1.0, 0.25, 2, 200
+        args.exp_betas, args.ou_rhos = [0.1, 0.4], [0.9]
 
     xi = args.cutoff
     common = dict(T=args.T, eps=args.eps, order=args.order, cutoff=xi,
                   cutoff_mode=args.cutoff_mode, max_bond=args.max_bond, method=args.method,
                   decomp=args.decomp, decomp_q=args.decomp_q, device=args.device, L0=args.L0)
     print(f"Coupling-distribution scaling study (Gaudin): K={args.K}, T={args.T} g^-1, "
-          f"eps={args.eps} g^-1, order={args.order}, xi={xi:g}, beta={args.beta}, "
-          f"seeds={args.seeds}, compress={args.method}/{args.decomp}(q{args.decomp_q}), "
-          f"device={args.device}")
+          f"eps={args.eps} g^-1, order={args.order}, xi={xi:g}, "
+          f"exp_betas={args.exp_betas}, ou_rhos={args.ou_rhos}, seeds={args.seeds}, "
+          f"compress={args.method}/{args.decomp}(q{args.decomp_q}), device={args.device}")
 
-    results = {}   # kind -> dict(rows, fits, crit, couplings, D_a, [per_seed])
-    for kind in DISTRIBUTIONS:
+    # Build the sample groups: a few parameter values per mode (each its own fit);
+    # random/ou pool several seeds into one fit.  ou folds in generation order
+    # (correlation preserved -> x non-monotonic, no critical-L).
+    g, K, S = args.g, args.K, args.seeds
+    groups = [("linear", "linear", [model_for("linear", g, K)]),
+              ("uniform", "uniform", [model_for("uniform", g, K)])]
+    for b in args.exp_betas:
+        groups.append((f"exp b={b:g}", "exp", [model_for("exp", g, K, beta=b)]))
+    groups.append(("random", "random", [model_for("random", g, K, seed=s) for s in range(S)]))
+    for rho in args.ou_rhos:
+        groups.append((f"ou rho={rho:g}", "ou", [model_for("ou", g, K, rho=rho, seed=s)
+                                                 for s in range(S)]))
+
+    results = {}   # label -> dict(rows, fits, crit, members, couplings, D_a, mode)
+    for label, mode, models in groups:
         t0 = time.perf_counter()
-        if kind == "random":
-            seed_rows, per_seed = [], []
-            D_a = None
-            for s in range(args.seeds):
-                model = model_for("random", args.g, args.K, seed=s)
-                rows, D_a = sweep(model, **common)
-                seed_rows.extend(rows)
-                per_seed.append({"seed": s, "crit": critical_Ls(rows, D_a)})
-            rows_for_fit = seed_rows
-            couplings = model_for("random", args.g, args.K, seed=0).couplings
-            crit = {"per_seed": per_seed}
-        else:
-            model = model_for(kind, args.g, args.K, beta=args.beta)
-            rows_for_fit, D_a = sweep(model, **common)
-            couplings = model.couplings
-            crit = critical_Ls(rows_for_fit, D_a)
-
-        x = np.array([r["x"] for r in rows_for_fit])
+        all_rows, members, D_a = [], [], None
+        for m in models:
+            rows, D_a = sweep(m, **common)
+            all_rows.extend(rows)
+            members.append(critical_Ls(rows, D_a))
+        x = np.array([r["x"] for r in all_rows])
         fits = {
-            "eta_max": powerlaw_fit(x, [r["eta_max"] for r in rows_for_fit]),
-            "eta_rms": powerlaw_fit(x, [r["eta_rms"] for r in rows_for_fit]),
-            "chord":   powerlaw_fit(x, [r["chord"] for r in rows_for_fit]),
+            "eta_max": powerlaw_fit(x, [r["eta_max"] for r in all_rows]),
+            "eta_rms": powerlaw_fit(x, [r["eta_rms"] for r in all_rows]),
+            "eta_rms_tail": tail_fit(x, [r["eta_rms"] for r in all_rows], args.tail_frac),
+            "chord":   powerlaw_fit(x, [r["chord"] for r in all_rows]),
         }
-        results[kind] = dict(rows=rows_for_fit, fits=fits, crit=crit,
-                             couplings=couplings.tolist(), D_a=D_a)
-        wall = time.perf_counter() - t0
+        results[label] = dict(rows=all_rows, fits=fits, members=members, mode=mode,
+                              couplings=models[0].couplings.tolist(), D_a=D_a)
         a, c_, r2, n = fits["eta_rms"]
-        print(f"  [{kind:>7}] eta_rms ~ {c_:.3g} * x^{a:.3f}  (R2={r2:.3f}, n={n}) "
-              f"  ({wall:.1f}s)")
+        at = fits["eta_rms_tail"][0]
+        print(f"  [{label:>10}] eta_rms ~ {c_:.3g}*x^{a:.3f} (R2={r2:.3f},n={n}) "
+              f"| tail a={at:.3f}  ({time.perf_counter()-t0:.1f}s)")
 
     _report(results, xi)
     _save(results, args, xi)
@@ -341,39 +370,40 @@ def main():
 # --------------------------------------------------------------------------
 
 def _report(results, xi):
-    print("\n=== Scaling law  eta ~ c * x^alpha  (x = g_{L+1}^2 / gbar_L^2) ===")
-    print(f"{'dist':>8} | {'alpha(eta_max)':>14} {'c':>9} {'R2':>6} | "
-          f"{'alpha(eta_rms)':>14} {'c':>9} {'R2':>6} | {'alpha(chord)':>12} {'R2':>6}")
-    print("-" * 100)
-    for kind, r in results.items():
-        am, cm, r2m, _ = r["fits"]["eta_max"]
+    print("\n=== Scaling law  eta ~ c * x^alpha  (x = g_{L+1}^2 / gbar_L^2;  theory: alpha=1) ===")
+    print(f"{'group':>11} | {'a(eta_rms)':>10} {'c':>8} {'R2':>6} | "
+          f"{'a_tail(x->0)':>12} {'R2':>6} {'n':>4} | {'a(chord)':>9} | {'a(eta_max)':>10}")
+    print("-" * 92)
+    for label, r in results.items():
         ar, cr, r2r, _ = r["fits"]["eta_rms"]
-        ac, _, r2c, _ = r["fits"]["chord"]
-        print(f"{kind:>8} | {am:>14.3f} {cm:>9.3g} {r2m:>6.3f} | "
-              f"{ar:>14.3f} {cr:>9.3g} {r2r:>6.3f} | {ac:>12.3f} {r2c:>6.3f}")
+        at, _, r2t, nt = r["fits"]["eta_rms_tail"]
+        ac, _, _, _ = r["fits"]["chord"]
+        am, _, _, _ = r["fits"]["eta_max"]
+        print(f"{label:>11} | {ar:>10.3f} {cr:>8.3g} {r2r:>6.3f} | "
+              f"{at:>12.3f} {r2t:>6.3f} {nt:>4} | {ac:>9.3f} | {am:>10.3f}")
+    print("  (a_tail = slope on the smallest-x tail; theory predicts it -> 1 for every "
+          "non-degenerate mode)")
 
-    print("\n=== Critical L* (pure-projection feasible) ===")
-    for kind, r in results.items():
-        crit = r["crit"]
-        if "per_seed" in crit:
-            keys = crit["per_seed"][0]["crit"].keys()
-            print(f"  [{kind}] across {len(crit['per_seed'])} seeds:")
-            for key in keys:
-                vals = [ps["crit"][key] for ps in crit["per_seed"]]
-                shown = [v for v in vals if v is not None]
-                summ = f"{min(shown)}..{max(shown)}" if shown else "never"
-                print(f"      {key:<20} L* = {summ}")
+    print("\n=== Critical L* (pure-projection feasible; ou unsorted -> not meaningful) ===")
+    for label, r in results.items():
+        members = r["members"]
+        keys = members[0].keys()
+        if len(members) == 1:
+            print(f"  [{label}] " + ", ".join(
+                f"{k}={members[0][k] if members[0][k] is not None else '—'}" for k in keys))
         else:
-            print(f"  [{kind}] " + ", ".join(
-                f"{k}={v if v is not None else '—'}" for k, v in crit.items()))
+            print(f"  [{label}] across {len(members)} seeds:")
+            for key in keys:
+                shown = [mm[key] for mm in members if mm[key] is not None]
+                print(f"      {key:<20} L* = {(f'{min(shown)}..{max(shown)}' if shown else 'never')}")
 
 
 def _save(results, args, xi):
     _DIR_DATA.mkdir(parents=True, exist_ok=True)
     out = {"meta": vars(args), "xi": xi,
-           "distributions": {k: {"fits": r["fits"], "crit": r["crit"],
-                                 "D_a": r["D_a"], "couplings": r["couplings"],
-                                 "rows": r["rows"]}
+           "distributions": {k: {"fits": r["fits"], "members": r["members"],
+                                 "mode": r["mode"], "D_a": r["D_a"],
+                                 "couplings": r["couplings"], "rows": r["rows"]}
                              for k, r in results.items()}}
     path = _DIR_DATA / f"{args.name}.json"
     with open(path, "w") as f:
@@ -389,31 +419,48 @@ def _plot(results, xi, name):
     except ImportError:
         print("matplotlib not available; skipping plots")
         return
-    colors = {"linear": "C0", "uniform": "C1", "exp": "C2", "random": "C3"}
+    labels = list(results)
+    cmap = plt.get_cmap("turbo")
+    colors = {lab: cmap(i / max(1, len(labels) - 1)) for i, lab in enumerate(labels)}
 
     # --- Figure 1: scaling collapse (eta_rms vs x) + coupling profiles --------
-    fig, (ax_c, ax_s) = plt.subplots(1, 2, figsize=(13, 5))
-    for kind, r in results.items():
-        ax_c.plot(range(1, len(r["couplings"]) + 1), r["couplings"], "o-", ms=3,
-                  color=colors[kind], label=kind)
-    ax_c.set_xlabel("sub-bath k (descending)"); ax_c.set_ylabel(r"$g_k$")
-    ax_c.set_title(r"coupling profiles ($\sum g_k^2=g^2$)"); ax_c.legend(fontsize=9)
+    fig, (ax_c, ax_s) = plt.subplots(1, 2, figsize=(14, 5.5))
+    for lab in labels:
+        r = results[lab]
+        ax_c.plot(range(1, len(r["couplings"]) + 1), r["couplings"], "-", lw=1.2,
+                  color=colors[lab], label=lab)
+    ax_c.set_xlabel("sub-bath k (fold order)"); ax_c.set_ylabel(r"$g_k$")
+    ax_c.set_title(r"coupling profiles ($\sum g_k^2=g^2$)"); ax_c.legend(fontsize=7, ncol=2)
 
-    for kind, r in results.items():
+    for lab in labels:
+        r = results[lab]
         x = np.array([row["x"] for row in r["rows"]])
         y = np.array([row["eta_rms"] for row in r["rows"]])
         a, c, r2, _ = r["fits"]["eta_rms"]
-        ax_s.loglog(x, y, "o", ms=4, color=colors[kind], alpha=0.6,
-                    label=fr"{kind}: $\alpha$={a:.2f}, $R^2$={r2:.2f}")
+        at = r["fits"]["eta_rms_tail"][0]
+        ax_s.loglog(x, y, "o", ms=3, color=colors[lab], alpha=0.55,
+                    label=fr"{lab}: $\alpha$={a:.2f} (tail {at:.2f})")
         xs = np.array([x[x > 0].min(), x.max()])
-        ax_s.loglog(xs, c * xs**a, "-", color=colors[kind], lw=1.2)
+        ax_s.loglog(xs, c * xs**a, "-", color=colors[lab], lw=1.0)
+    # theory slope-1 guide
+    xall = np.concatenate([[row["x"] for row in r["rows"]] for r in results.values()])
+    xall = xall[xall > 0]
+    xr = np.array([xall.min(), xall.max()])
+    ax_s.loglog(xr, xr / xr.max() * 1e-2, "k--", lw=1.0, label=r"slope 1 (theory)")
     ax_s.set_xlabel(r"$x = g_{L+1}^2 / \bar g_L^2$"); ax_s.set_ylabel(r"$\eta_{\rm rms}$")
-    ax_s.set_title(r"scaling law $\eta \sim c\,x^\alpha$"); ax_s.legend(fontsize=8)
+    ax_s.set_title(r"scaling law $\eta \sim c\,x^\alpha$  (theory $\alpha=1$)")
+    ax_s.legend(fontsize=6, ncol=2)
     _savefig(fig, plt, f"{name}_scaling")
 
-    # --- Figure 2: per-distribution eta & n_new vs L --------------------------
-    fig, axes = plt.subplots(2, len(results), figsize=(4 * len(results), 8), squeeze=False)
-    for j, (kind, r) in enumerate(results.items()):
+    # --- Figure 2: per-distribution eta & n_new vs L (one representative per mode) --
+    reps, seen = [], set()
+    for lab in labels:
+        mode = results[lab].get("mode", lab)
+        if mode not in seen:
+            seen.add(mode); reps.append(lab)
+    fig, axes = plt.subplots(2, len(reps), figsize=(4 * len(reps), 8), squeeze=False)
+    for j, kind in enumerate(reps):
+        r = results[kind]
         L = np.array([row["L"] for row in r["rows"]])
         a0, a1 = axes[0][j], axes[1][j]
         a0.semilogy(L, [row["eta_max"] for row in r["rows"]], "o-", ms=3, label=r"$\eta_{\max}$")

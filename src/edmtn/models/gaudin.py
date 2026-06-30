@@ -90,11 +90,41 @@ def random_couplings(g: float, K: int, seed: int = 0,
     """Disordered profile ``g_k ~ Uniform(low, high)`` (sorted descending), norm ``g**2``.
 
     The absolute scale of ``[low, high)`` is irrelevant after normalisation; only the
-    *shape* of the draw matters.  ``seed`` selects the realisation.
+    *shape* of the draw matters.  ``seed`` selects the realisation.  Sorted, so the
+    marginal magnitude spectrum (uniform order statistics) is what differs from other
+    modes -- contrast with :func:`ou_couplings`, which keeps sequence correlation.
     """
     _check_K(K)
     c = np.random.default_rng(seed).uniform(low, high, size=K)
     return _normalise_descending(c, g)
+
+
+def ou_couplings(g: float, K: int, rho: float = 0.8, seed: int = 0) -> np.ndarray:
+    """Correlated (OU / AR(1)) disordered profile, **NOT sorted** -- norm ``g**2``.
+
+    ``c_k = rho * c_{k-1} + sqrt(1 - rho**2) * z_k`` with ``z ~ N(0, 1)`` -- the
+    stationary Ornstein-Uhlenbeck / AR(1) process (unit marginal variance, lag-1
+    correlation ``rho``); ``g_k = |c_k|`` then normalised.  Unlike the i.i.d.
+    :func:`random_couplings`, this is **left in generation order** so the
+    nearest-neighbour correlation along the sub-bath index survives (sorting would
+    destroy it, collapsing every ``rho`` onto the same half-normal spectrum).  The
+    fold therefore proceeds in sequence order and ``x = g_{L+1}^2 / gbar_L^2`` is
+    non-monotonic -- meaningful for the scaling-law fit, not for a critical ``L``.
+    """
+    _check_K(K)
+    if not 0.0 <= rho < 1.0:
+        raise ValueError("rho must be in [0, 1)")
+    rng = np.random.default_rng(seed)
+    c = np.empty(K, dtype=np.float64)
+    c[0] = rng.standard_normal()
+    s = np.sqrt(1.0 - rho * rho)
+    for k in range(1, K):
+        c[k] = rho * c[k - 1] + s * rng.standard_normal()
+    a = np.abs(c)
+    nrm = float(np.sqrt(np.sum(a**2)))
+    if nrm <= 0:
+        raise ValueError("OU draw collapsed to zero norm")
+    return a * (g / nrm)                       # NO sort: keep the correlation
 
 
 COUPLING_PROFILES = {
@@ -102,6 +132,7 @@ COUPLING_PROFILES = {
     "uniform": uniform_couplings,
     "exp": exponential_couplings,
     "random": random_couplings,
+    "ou": ou_couplings,
 }
 
 

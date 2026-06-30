@@ -14,6 +14,7 @@ from .gaudin import (
     coupling_profile,
     exponential_couplings,
     linear_couplings,
+    ou_couplings,
     random_couplings,
     uniform_couplings,
 )
@@ -36,4 +37,5 @@ __all__ = [
     "uniform_couplings",
     "exponential_couplings",
     "random_couplings",
+    "ou_couplings",
 ]

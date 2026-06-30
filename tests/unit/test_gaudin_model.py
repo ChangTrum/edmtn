@@ -235,6 +235,26 @@ def test_unknown_profile_rejected():
         GaudinModel(g=1.0, K=10, coupling="nonsense")
 
 
+def test_ou_profile_normalised_correlated_and_unsorted():
+    g, K = 1.0, 40
+    a = GaudinModel(g=g, K=K, coupling="ou", coupling_params={"rho": 0.9, "seed": 3}).couplings
+    b = GaudinModel(g=g, K=K, coupling="ou", coupling_params={"rho": 0.9, "seed": 3}).couplings
+    np.testing.assert_allclose(np.sum(a**2), g**2, rtol=1e-12)   # normalised
+    np.testing.assert_array_equal(a, b)                          # seed-reproducible
+    assert not np.all(np.diff(a) <= 0)                           # NOT sorted (correlation kept)
+    # higher rho -> more correlated -> larger lag-1 autocorrelation of the sequence
+    lo = GaudinModel(g=g, K=200, coupling="ou", coupling_params={"rho": 0.2, "seed": 0}).couplings
+    hi = GaudinModel(g=g, K=200, coupling="ou", coupling_params={"rho": 0.95, "seed": 0}).couplings
+    ac = lambda v: np.corrcoef(v[:-1], v[1:])[0, 1]
+    assert ac(hi) > ac(lo)
+
+
+@pytest.mark.parametrize("rho", [-0.1, 1.0, 1.5])
+def test_ou_rejects_bad_rho(rho):
+    with pytest.raises(ValueError):
+        GaudinModel(g=1.0, K=10, coupling="ou", coupling_params={"rho": rho})
+
+
 # --------------------------------------------------------------------------
 # registry
 # --------------------------------------------------------------------------
