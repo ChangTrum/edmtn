@@ -34,6 +34,7 @@ bonds, d_phys=7 vertical legs, top arms closed by δ⁰. GPU validation lives in
 from __future__ import annotations
 
 import itertools
+import numbers
 
 import numpy as np
 
@@ -350,7 +351,15 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
             "manual time-window blocking (time_windows) is wired but not yet "
             "implemented; B1 ships one-shot whole-spacetime. Use time_windows=None.")
 
-    expander = _make_expander(config.expansion_order)
+    # Resolve the effective order locally (Layer 5 must not import the Layer-7 driver):
+    # config default None inherits the model's time_step_order. Strictly validated so a
+    # bool / float / out-of-range value is never silently treated as first order.
+    order = config.expansion_order
+    if order is None:
+        order = getattr(model, "time_step_order", None)
+    if isinstance(order, bool) or not isinstance(order, numbers.Integral) or int(order) not in (1, 2):
+        raise ValueError(f"expansion order must be the integer 1 or 2, got {order!r}")
+    expander = _make_expander(int(order))
 
     pathfinder = getattr(config, "pathfinder", "cuquantum")
     N = config.n_steps

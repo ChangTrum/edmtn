@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import numbers
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..expansion.first_order import FirstOrderExpander
 from ..expansion.second_order import SecondOrderExpander
@@ -137,9 +137,10 @@ class SolverConfig:
         Hard bond-dimension cap.
     ref_index : int, optional
         Reference index for ``'rel_ref'`` (defaults to ``d**2``).
-    expansion_order : int
-        Trotter order.  Phase 1 supports ``1``; ``2`` is accepted here but the
-        single-bath engine currently rejects it (doubled sub-step grid pending).
+    expansion_order : int, optional
+        Trotter order (``1`` or ``2``).  ``None`` (the default) inherits the model's
+        ``time_step_order``; an explicit value overrides it.  Resolved once in the driver
+        (see :func:`resolve_config_for_model`) so every layer uses the same order.
     record_rho : bool
         Store ``rho(t)`` at every step (needed for custom observables).
     cutoff, cutoff_mode : float, str
@@ -154,7 +155,7 @@ class SolverConfig:
     cutoff: float = 1e-8
     cutoff_mode: str = "rel"       # quimb-native cutoff (rel: faithful to the retired rel_ref)
     max_bond: int | None = None
-    expansion_order: int = 1
+    expansion_order: int | None = None  # None -> inherit the model's time_step_order
     record_rho: bool = False
     compress_method: str = "zipup"        # 'zipup'|'dm'|'direct' (quimb 1D-compress; N/A under backend='hpc')
     compress_decomp: str = "exact"        # cpu/gpu: 'exact'|'rsvd' (N/A under 'hpc': Track 2 is exact-only, no truncation)
@@ -189,10 +190,11 @@ class SolverConfig:
         _set("cutoff", _nonnegative_finite_float("cutoff", self.cutoff))
         _set("cutoff_mode", _choice("cutoff_mode", self.cutoff_mode, _CUTOFF_MODES))
         _set("max_bond", _optional_positive_int("max_bond", self.max_bond))
-        if not _is_int(self.expansion_order) or int(self.expansion_order) not in (1, 2):
-            raise ValueError(
-                f"expansion_order must be the integer 1 or 2, got {self.expansion_order!r}")
-        _set("expansion_order", int(self.expansion_order))
+        if self.expansion_order is not None:  # None -> inherit model.time_step_order at solve time
+            if not _is_int(self.expansion_order) or int(self.expansion_order) not in (1, 2):
+                raise ValueError(
+                    f"expansion_order must be None or the integer 1 or 2, got {self.expansion_order!r}")
+            _set("expansion_order", int(self.expansion_order))
         _set("record_rho", _boolean("record_rho", self.record_rho))
         _set("compress_method", _choice("compress_method", self.compress_method, _COMPRESS_METHODS))
         _set("compress_decomp", _choice("compress_decomp", self.compress_decomp, _COMPRESS_DECOMPS))
@@ -258,8 +260,38 @@ def available_pipelines() -> tuple:
     return tuple(sorted(_PIPELINES))
 
 
+def resolve_expansion_order(model, config: SolverConfig) -> int:
+    """The effective Trotter order used by every layer: the model's ``time_step_order``
+    unless the config overrides it via an explicit ``expansion_order``.  Validated to be
+    the integer ``1`` or ``2`` here (a model with a bad ``time_step_order`` fails loudly,
+    rather than being silently treated as first order downstream)."""
+    value = model.time_step_order if config.expansion_order is None else config.expansion_order
+    if not _is_int(value) or int(value) not in (1, 2):
+        raise ValueError(
+            f"resolved expansion order must be the integer 1 or 2, got {value!r} "
+            f"(config.expansion_order={config.expansion_order!r}, "
+            f"model.time_step_order={getattr(model, 'time_step_order', None)!r})")
+    return int(value)
+
+
+def resolve_config_for_model(model, config: SolverConfig) -> SolverConfig:
+    """Return a config whose ``expansion_order`` is the concrete resolved order, so every
+    layer (driver, kernel, expander, extractor) reads a single field.  The original frozen
+    config is left untouched; an explicit ``expansion_order`` is returned unchanged.  Both
+    :class:`~edmtn.driver.solver.EDMSolver` and :func:`build_pipeline` funnel through this."""
+    if config.expansion_order is not None:
+        return config
+    return replace(config, expansion_order=resolve_expansion_order(model, config))
+
+
 def build_pipeline(model, config: SolverConfig):
-    """Construct ``(kernel_engine, evolution_engine)`` for ``model``."""
+    """Construct ``(kernel_engine, evolution_engine)`` for ``model``.
+
+    Resolves the effective order first (so a default ``expansion_order=None`` inherits the
+    model's ``time_step_order``) -- this public entry point works standalone, not only via
+    :class:`~edmtn.driver.solver.EDMSolver`.
+    """
+    config = resolve_config_for_model(model, config)
     bt = model.bath_type
     if bt not in _PIPELINES:
         raise NotImplementedError(

@@ -56,7 +56,8 @@ def test_solve_returns_result(model):
     assert isinstance(res, SolverResult)
     assert res.times.shape == res.polarization.shape == (20,)
     assert len(res.bond_dims) == 20
-    assert res.mps.num_sites == 20
+    # default now inherits the model's time_step_order (=2) -> 2 sub-step sites per step
+    assert res.mps.num_sites == 40
 
 
 def test_solve_times_ascending_and_endpoint(model):

@@ -11,6 +11,8 @@ from .auto_config import (
     available_pipelines,
     build_pipeline,
     register_pipeline,
+    resolve_config_for_model,
+    resolve_expansion_order,
 )
 from .solver import EDMSolver, SolverResult, solve
 
@@ -22,4 +24,6 @@ __all__ = [
     "build_pipeline",
     "register_pipeline",
     "available_pipelines",
+    "resolve_expansion_order",
+    "resolve_config_for_model",
 ]

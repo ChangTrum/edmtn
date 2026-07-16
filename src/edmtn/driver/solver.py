@@ -16,7 +16,7 @@ import numpy as np
 
 from ..observables.convergence import is_converged, max_history_deviation
 from ..observables.extractor import ObservableExtractor
-from .auto_config import SolverConfig, build_pipeline
+from .auto_config import SolverConfig, build_pipeline, resolve_config_for_model
 
 
 @dataclass
@@ -33,6 +33,10 @@ class SolverResult:
         Maximum bond dimension after each step.
     truncation_errors : list[float]
         Largest discarded weight per step.
+    expansion_order : int
+        The resolved Trotter order actually used (``1`` or ``2``) -- the model's
+        ``time_step_order`` unless the config overrode it.  Recorded so the result's
+        metadata matches the algorithm that produced it.
     observables : dict[str, ndarray]
         Custom observable histories (empty unless requested + ``record_rho``).
     mps : EDMMPS
@@ -45,6 +49,7 @@ class SolverResult:
     polarization: object
     bond_dims: list
     truncation_errors: list
+    expansion_order: int
     observables: dict = field(default_factory=dict)
     mps: object = None
     evolution: object = None
@@ -70,12 +75,14 @@ class EDMSolver:
 
     def __init__(self, model, config: SolverConfig):
         self.model = model
-        self.config = config
+        # resolve the effective order ONCE (config default None -> model.time_step_order),
+        # store the resolved config so every layer reads the same order; original untouched
+        self.config = resolve_config_for_model(model, config)
         # the hpc (cuQuantum 2D) track builds nothing from the Track-1 pipeline
-        if config.backend == "hpc":
+        if self.config.backend == "hpc":
             self.kernel_engine = self.evolution = None
         else:
-            self.kernel_engine, self.evolution = build_pipeline(model, config)
+            self.kernel_engine, self.evolution = build_pipeline(model, self.config)
 
     @classmethod
     def from_model(cls, model, *, T: float, eps: float, **kwargs) -> "EDMSolver":
@@ -182,6 +189,7 @@ class EDMSolver:
             polarization=pol,
             bond_dims=ev.bond_dims,
             truncation_errors=ev.truncation_errors,
+            expansion_order=cfg.expansion_order,
             observables=extra,
             mps=ev.mps,
             evolution=ev,
@@ -210,6 +218,7 @@ class EDMSolver:
             polarization=out["polarization"],
             bond_dims=[],            # cuTensorNet manages bonds internally (one-shot)
             truncation_errors=[],
+            expansion_order=self.config.expansion_order,
             observables={},
             mps=None,
             evolution=None,
@@ -262,6 +271,7 @@ class EDMSolver:
             polarization=pol,
             bond_dims=ev.bond_dims,
             truncation_errors=ev.truncation_errors,
+            expansion_order=cfg.expansion_order,
             observables={},
             mps=ev.mps,
             evolution=ev,
