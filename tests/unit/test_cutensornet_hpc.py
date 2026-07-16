@@ -56,13 +56,12 @@ def test_solver_hpc_skips_track1_pipeline():
 
 
 def test_auto_backend_removed():
-    cfg = SolverConfig(eps=0.1, T=0.2, backend="auto")
+    # rejected at config construction now (centralized SolverConfig validation)
     with pytest.raises(ValueError):
-        EDMSolver(GaudinModel(g=1.0, K=2), cfg)._resolve_backend()
+        SolverConfig(eps=0.1, T=0.2, backend="auto")
 
 
 def test_windows_not_yet_implemented():
-    model = GaudinModel(g=1.0, K=2, time_step_order=1)
-    cfg = SolverConfig(eps=0.1, T=0.2, backend="hpc", time_windows=2)
+    # rejected at config construction now, for any non-None time_windows
     with pytest.raises(NotImplementedError):
-        solve_cutensornet(model, cfg, channel=3, executor="numpy")
+        SolverConfig(eps=0.1, T=0.2, backend="hpc", time_windows=2)

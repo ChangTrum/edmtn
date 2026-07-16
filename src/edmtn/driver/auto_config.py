@@ -10,6 +10,8 @@ Phase 1 ships the ``gaussian`` pipeline only.
 
 from __future__ import annotations
 
+import math
+import numbers
 from dataclasses import dataclass, field
 
 from ..expansion.first_order import FirstOrderExpander
@@ -19,8 +21,103 @@ from ..kernels.separable_mpo import SeparableKernelEngine
 from ..evolution.separable_bath import SeparableBathEvolution
 from ..evolution.single_bath import SingleBathEvolution
 
+# -- config validation -----------------------------------------------------
+# Every SolverConfig knob is validated at construction (in __post_init__) so a
+# bad value fails loudly and immediately, at the config entry point, rather than
+# surfacing as a divide-by-zero / int-cast / silent-round deep inside a pipeline
+# -- and so BOTH tracks (cpu/gpu Track 1 and the hpc Track 2) reject an illegal
+# time grid with the SAME error instead of Track 2 silently rounding T/eps down.
 
-@dataclass
+_NSTEPS_RTOL = 1e-9  # T/eps must equal an integer within this relative tolerance
+
+# Public allowed enum values -- EDMTN's supported/tested config contract, read
+# from the code that consumes each knob (a backend/library may accept more; these
+# are the values EDMTN exposes and tests):
+_BACKENDS = ("cpu", "numpy", "gpu", "cupy", "hpc")   # solver._resolve_backend + hpc path
+_PRECISIONS = ("f64", "mixed")                        # solver._resolve_backend
+_CUTOFF_MODES = ("abs", "rel", "sum2", "rsum2", "sum1", "rsum1")  # quimb-native string modes
+_COMPRESS_METHODS = ("zipup", "dm", "direct")         # EDMTN's tested subset of quimb 1D-compress
+_COMPRESS_DECOMPS = ("exact", "rsvd")                 # quimb_decomp.compress_opts_for
+_COMPRESS_CANONS = ("quimb", "householder", "cholqr")  # quimb_decomp._CANON_METHOD
+_PATHFINDERS = ("cuquantum", "cotengra")              # cutensornet path-finder select
+
+
+def _is_int(value) -> bool:
+    """True for a genuine integer (Python ``int`` or NumPy integer), excluding ``bool``."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _is_real(value) -> bool:
+    """True for a real number usable as a float, excluding ``bool``."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _positive_finite_float(name: str, value) -> float:
+    if not _is_real(value):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    v = float(value)
+    if not math.isfinite(v) or v <= 0.0:
+        raise ValueError(f"{name} must be finite and > 0, got {value!r}")
+    return v
+
+
+def _nonnegative_finite_float(name: str, value) -> float:
+    if not _is_real(value):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    v = float(value)
+    if not math.isfinite(v) or v < 0.0:
+        raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
+    return v
+
+
+def _nonnegative_int(name: str, value) -> int:
+    if not _is_int(value):
+        raise ValueError(f"{name} must be an integer (not bool), got {value!r}")
+    v = int(value)
+    if v < 0:
+        raise ValueError(f"{name} must be >= 0, got {value!r}")
+    return v
+
+
+def _optional_positive_int(name: str, value):
+    if value is None:
+        return None
+    if not _is_int(value):
+        raise ValueError(f"{name} must be a positive integer or None (not bool), got {value!r}")
+    v = int(value)
+    if v < 1:
+        raise ValueError(f"{name} must be >= 1 or None, got {value!r}")
+    return v
+
+
+def _boolean(name: str, value) -> bool:
+    if not isinstance(value, bool):  # strict: reject 1 / "yes" / np.bool_
+        raise ValueError(f"{name} must be a bool, got {value!r}")
+    return value
+
+
+def _choice(name: str, value, allowed):
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of {tuple(allowed)}, got {value!r}")
+    return value
+
+
+def _validated_n_steps(T: float, eps: float) -> int:
+    """Number of steps ``T / eps``, requiring it to be a positive integer within
+    ``_NSTEPS_RTOL`` so the grid lands exactly on ``T`` (no silent round-down)."""
+    ratio = T / eps
+    if not math.isfinite(ratio):  # e.g. huge/tiny inputs overflow or underflow the quotient
+        raise ValueError(f"T/eps must be finite; got T={T!r}, eps={eps!r} -> T/eps={ratio!r}")
+    nearest = round(ratio)
+    if nearest < 1 or abs(ratio - nearest) > _NSTEPS_RTOL * max(1.0, abs(ratio)):
+        raise ValueError(
+            f"T/eps must be a positive integer within relative tol {_NSTEPS_RTOL:g} "
+            f"(so the time grid lands exactly on T); got T={T!r}, eps={eps!r} -> "
+            f"T/eps={ratio!r}")
+    return int(nearest)
+
+
+@dataclass(frozen=True)
 class SolverConfig:
     """Configuration for :class:`~edmtn.driver.solver.EDMSolver`.
 
@@ -29,7 +126,8 @@ class SolverConfig:
     eps : float
         Time step.
     T : float
-        Total evolution time; ``n_steps = round(T / eps)``.
+        Total evolution time; ``T / eps`` must be a positive integer (validated at
+        construction) so the grid lands exactly on ``T``.  ``n_steps`` caches it.
     cutoff : float
         SVD truncation precision (``0`` keeps every singular value -- exact but
         not scalable).
@@ -74,23 +172,59 @@ class SolverConfig:
     # `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>` (see cluster/); edmtn
     # itself does not submit/srun/ssh -- that is the user's job.
 
+    # derived + cached at construction (frozen: set via object.__setattr__ below)
+    _n_steps: int = field(init=False, repr=False, compare=False, default=0)
+
     def __post_init__(self):
-        # Presets are Track-1 rSVD recipes; they don't apply to the hpc track
-        # (Track 2 is exact-only, no truncation knobs).
-        if self.preset is None or self.backend == "hpc":
-            return
-        if self.preset not in _PRESETS:
+        # frozen dataclass: bypass immutability to store validated / normalised values
+        def _set(name, value):
+            object.__setattr__(self, name, value)
+
+        # -- time grid (validated identically for both tracks) --
+        _set("eps", _positive_finite_float("eps", self.eps))
+        _set("T", _positive_finite_float("T", self.T))
+        _set("_n_steps", _validated_n_steps(self.T, self.eps))
+
+        # -- truncation / compression knobs --
+        _set("cutoff", _nonnegative_finite_float("cutoff", self.cutoff))
+        _set("cutoff_mode", _choice("cutoff_mode", self.cutoff_mode, _CUTOFF_MODES))
+        _set("max_bond", _optional_positive_int("max_bond", self.max_bond))
+        if not _is_int(self.expansion_order) or int(self.expansion_order) not in (1, 2):
             raise ValueError(
-                f"unknown preset {self.preset!r}; choose from {sorted(_PRESETS)} or None"
-            )
-        spec = _PRESETS[self.preset]
-        if self.compress_decomp == "exact":  # only fill if left at the default
-            self.compress_decomp = spec["compress_decomp"]
-            self.compress_decomp_q = spec["compress_decomp_q"]
+                f"expansion_order must be the integer 1 or 2, got {self.expansion_order!r}")
+        _set("expansion_order", int(self.expansion_order))
+        _set("record_rho", _boolean("record_rho", self.record_rho))
+        _set("compress_method", _choice("compress_method", self.compress_method, _COMPRESS_METHODS))
+        _set("compress_decomp", _choice("compress_decomp", self.compress_decomp, _COMPRESS_DECOMPS))
+        _set("compress_decomp_q", _nonnegative_int("compress_decomp_q", self.compress_decomp_q))
+        _set("compress_canon", _choice("compress_canon", self.compress_canon, _COMPRESS_CANONS))
+        _set("sub_baths", _optional_positive_int("sub_baths", self.sub_baths))
+
+        # -- backend / precision / hpc-only knobs --
+        _set("backend", _choice("backend", self.backend, _BACKENDS))
+        _set("precision", _choice("precision", self.precision, _PRECISIONS))
+        _set("pathfinder", _choice("pathfinder", self.pathfinder, _PATHFINDERS))
+        if self.time_windows is not None:  # concept is valid but not implemented -> NotImplementedError
+            raise NotImplementedError(
+                "manual time-window blocking (time_windows) is wired but not yet "
+                "implemented; the hpc track ships one-shot whole-spacetime only. "
+                "Use time_windows=None.")
+
+        # -- presets: validate legality for ALL backends; APPLY only on Track 1 --
+        # (Track-1 rSVD recipes don't apply to the hpc track, but an unknown preset
+        #  name is still rejected there rather than silently ignored.)
+        if self.preset is not None and self.preset not in _PRESETS:
+            raise ValueError(
+                f"unknown preset {self.preset!r}; choose from {sorted(_PRESETS)} or None")
+        if self.preset is not None and self.backend != "hpc":
+            spec = _PRESETS[self.preset]
+            if self.compress_decomp == "exact":  # only fill if left at the default
+                _set("compress_decomp", spec["compress_decomp"])
+                _set("compress_decomp_q", spec["compress_decomp_q"])
 
     @property
     def n_steps(self) -> int:
-        return int(round(self.T / self.eps))
+        return self._n_steps
 
 
 # Recommended presets (docs/guides/recommended-config.md): both use quimb rSVD, differing
