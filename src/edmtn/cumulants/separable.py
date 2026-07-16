@@ -93,6 +93,17 @@ class SeparableCorrelation:
     couplings: np.ndarray = field(repr=False)
     transfer: np.ndarray = field(repr=False)
 
+    def __post_init__(self):
+        # own private read-only copies so this correlation's recorded parameters and its
+        # transfer tensors can never be mutated out from under it via a shared array
+        # (frozen dataclass -> object.__setattr__)
+        couplings = np.array(self.couplings, dtype=np.float64, copy=True)
+        transfer = np.array(self.transfer, dtype=np.complex128, copy=True)
+        couplings.setflags(write=False)
+        transfer.setflags(write=False)
+        object.__setattr__(self, "couplings", couplings)
+        object.__setattr__(self, "transfer", transfer)
+
     @property
     def K(self) -> int:
         """Number of sub-baths."""
