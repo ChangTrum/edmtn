@@ -18,6 +18,8 @@ The system starts fully polarised along ``+z`` and the bath in vacuum
 
 from __future__ import annotations
 
+import math
+import numbers
 from dataclasses import dataclass
 
 import numpy as np
@@ -29,6 +31,35 @@ _SX = np.array([[0.0, 0.5], [0.5, 0.0]], dtype=np.complex128)
 _SY = np.array([[0.0, -0.5j], [0.5j, 0.0]], dtype=np.complex128)
 _SZ = np.array([[0.5, 0.0], [0.0, -0.5]], dtype=np.complex128)
 _ID = np.eye(2, dtype=np.complex128)
+
+
+# -- parameter validation (module-private; Layer 1 keeps its own leaf checks
+#    rather than importing the driver-layer validators) --------------------
+def _to_float(name: str, value) -> float:
+    """Coerce a real ``value`` to float, turning a too-large Python int (which is a
+    ``numbers.Real`` but overflows float64) into a ``ValueError`` rather than a raw
+    ``OverflowError`` -- keeping the "illegal parameter -> ValueError" contract."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            f"{name} must be representable as a finite real number, got {value!r}") from exc
+
+
+def _positive_finite(name: str, value) -> float:
+    v = _to_float(name, value)
+    if not math.isfinite(v) or v <= 0.0:
+        raise ValueError(f"{name} must be finite and > 0, got {value!r}")
+    return v
+
+
+def _nonnegative_finite(name: str, value) -> float:
+    v = _to_float(name, value)
+    if not math.isfinite(v) or v < 0.0:
+        raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
+    return v
 
 
 @dataclass(frozen=True)
@@ -84,17 +115,21 @@ class SpinBosonModel(AbstractOQSModel):
         temperature: float = 0.0,
         time_step_order: int = 2,
     ):
-        if omega_c <= 0:
-            raise ValueError("omega_c must be positive")
-        if mu <= 0:
-            raise ValueError("mu must be positive")
-        if time_step_order not in (1, 2):
-            raise ValueError("time_step_order must be 1 or 2")
-        self.mu = float(mu)
-        self.time_step_order = time_step_order
-        self._bath = SpinBosonBathParams(
-            J0=float(J0), omega_c=float(omega_c), s=float(s), temperature=float(temperature)
-        )
+        J0 = _nonnegative_finite("J0", J0)          # 0 = no bath coupling (kept as a baseline)
+        omega_c = _positive_finite("omega_c", omega_c)
+        mu = _positive_finite("mu", mu)
+        s = _positive_finite("s", s)
+        temperature = _nonnegative_finite("temperature", temperature)
+        # model allows temperature >= 0; the Gaussian cumulant engine still rejects
+        # temperature != 0 at compute time (finite-T correlation unsupported).
+        if (isinstance(time_step_order, bool)
+                or not isinstance(time_step_order, numbers.Integral)
+                or int(time_step_order) not in (1, 2)):
+            raise ValueError(
+                f"time_step_order must be the integer 1 or 2, got {time_step_order!r}")
+        self.mu = mu
+        self.time_step_order = int(time_step_order)
+        self._bath = SpinBosonBathParams(J0=J0, omega_c=omega_c, s=s, temperature=temperature)
 
     # -- system ------------------------------------------------------------
 
@@ -126,14 +161,34 @@ class SpinBosonModel(AbstractOQSModel):
         return self._bath
 
     def spectral_density(self, omega):
-        """Spectral density ``J(omega)``, vectorised; zero for ``omega <= 0``."""
+        """Spectral density ``J(omega)``, vectorised; zero for ``omega <= 0``.
+
+        Rejects non-finite ``omega`` (``ValueError``).  ``J0 == 0`` short-circuits to
+        zero (no power/exp/gamma evaluated).  Huge-but-finite ``J0``/``omega_c``/``s``
+        can overflow float64; a non-finite result is reported as ``FloatingPointError``
+        rather than silently returned.  Finite non-positive ``omega`` still gives 0.
+        """
         p = self._bath
         omega = np.asarray(omega, dtype=np.float64)
-        # clamp to >= 0 so the power/exp are evaluated on a safe branch, then
-        # mask out the non-positive frequencies.
-        w = np.where(omega > 0.0, omega, 0.0)
-        j = 2.0 * p.J0 * p.omega_c ** (1.0 - p.s) * w ** p.s * np.exp(-w / p.omega_c)
-        out = np.where(omega > 0.0, j, 0.0)
+        if not np.all(np.isfinite(omega)):
+            raise ValueError("omega must be finite")
+        if p.J0 == 0.0:
+            out = np.zeros_like(omega)
+            return out if out.ndim else float(out)
+        # clamp to >= 0 so the power/exp are evaluated on a safe branch, then mask out
+        # the non-positive frequencies.  errstate silences the expected overflow warnings.
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            w = np.where(omega > 0.0, omega, 0.0)
+            try:
+                j = (2.0 * p.J0 * np.float64(p.omega_c) ** (1.0 - p.s)
+                     * w ** p.s * np.exp(-w / p.omega_c))
+            except OverflowError as exc:
+                raise FloatingPointError(
+                    "spectral density overflowed; check J0, omega_c, s, and omega") from exc
+            out = np.where(omega > 0.0, j, 0.0)
+        if not np.all(np.isfinite(out)):
+            raise FloatingPointError(
+                "spectral density is non-finite; check J0, omega_c, s, and omega")
         return out if out.ndim else float(out)
 
     def memory_time(self) -> float | None:

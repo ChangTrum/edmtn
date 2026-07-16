@@ -95,8 +95,14 @@ class GaussianCumulantEngine(CumulantEngine):
         self._require_zero_temperature(model)
         n = self._n_steps(T, eps)
         lags = eps * np.arange(n + 1)
-        f = self.correlation_function(model, lags)
-        return GaussianCumulants(eps=eps, n_steps=n, f=np.asarray(f, dtype=np.complex128))
+        f = np.asarray(self.correlation_function(model, lags), dtype=np.complex128)
+        # final defensive guard: the analytic path already raises on overflow, but this
+        # also catches the numeric method, subclasses, or future implementations that
+        # return a non-finite correlation before it reaches the kernel.
+        if not np.all(np.isfinite(f)):
+            raise FloatingPointError(
+                "Gaussian bath correlation f(tau) is non-finite; check the bath parameters")
+        return GaussianCumulants(eps=eps, n_steps=n, f=f)
 
     def correlation_function(self, model, tau):
         """Evaluate ``f(tau)`` for scalar or array ``tau`` (physical time)."""
@@ -120,12 +126,29 @@ class GaussianCumulantEngine(CumulantEngine):
 
     @staticmethod
     def _analytic(model, tau):
-        """Closed-form generalised-Ohmic correlation at zero temperature."""
+        """Closed-form generalised-Ohmic correlation at zero temperature.
+
+        ``J0 == 0`` short-circuits to zero (no gamma/power evaluated).  Huge-but-finite
+        ``J0``/``omega_c``/``s`` can overflow float64 or ``math.gamma``; such overflow is
+        reported as ``FloatingPointError`` rather than leaking a raw ``OverflowError`` or
+        a non-finite array into the kernel.
+        """
         p = model.bath_params()
         tau = np.asarray(tau, dtype=np.float64)
-        f = 2.0 * p.J0 * math.gamma(p.s + 1.0) * p.omega_c ** 2 / (
-            1.0 + 1j * p.omega_c * tau
-        ) ** (p.s + 1.0)
+        if p.J0 == 0.0:
+            f = np.zeros(tau.shape, dtype=np.complex128)
+            return f if f.ndim else complex(f)
+        try:
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                prefactor = 2.0 * p.J0 * math.gamma(p.s + 1.0) * np.float64(p.omega_c) ** 2
+                f = prefactor / (1.0 + 1j * p.omega_c * tau) ** (p.s + 1.0)
+        except OverflowError as exc:
+            raise FloatingPointError(
+                "Gaussian bath correlation overflowed; check J0, omega_c, and s") from exc
+        f = np.asarray(f, dtype=np.complex128)
+        if not np.all(np.isfinite(f)):
+            raise FloatingPointError(
+                "Gaussian bath correlation f(tau) is non-finite; check J0, omega_c, and s")
         return f if f.ndim else complex(f)
 
     @staticmethod

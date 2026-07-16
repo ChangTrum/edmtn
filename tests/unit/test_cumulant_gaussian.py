@@ -141,3 +141,50 @@ def test_nonpositive_args_raise(model, engine, bad):
 def test_unknown_method_raises():
     with pytest.raises(ValueError):
         GaussianCumulantEngine(method="wavelet")
+
+
+# --------------------------------------------------------------------------
+# P0-2: J0=0 no-coupling baseline + overflow -> FloatingPointError
+# --------------------------------------------------------------------------
+
+def test_zero_coupling_correlation_is_zero(engine):
+    # J0=0 short-circuits (no gamma/power); correlation strictly zero, finite
+    m = SpinBosonModel(J0=0.0, omega_c=5.0, mu=1.0, s=1.0)
+    cum = engine.compute(m, T=1.0, eps=0.1)
+    assert np.all(np.isfinite(cum.f))
+    np.testing.assert_allclose(cum.f, 0.0)
+
+
+def test_zero_coupling_short_circuits_extreme_exponent(engine):
+    # s=172 would overflow math.gamma(173); J0=0 must short-circuit before that
+    m = SpinBosonModel(J0=0.0, omega_c=1.0, mu=1.0, s=172.0)
+    cum = engine.compute(m, T=0.1, eps=0.1)
+    np.testing.assert_allclose(cum.f, 0.0)
+
+
+@pytest.mark.filterwarnings("error")  # no unhandled RuntimeWarning may leak
+def test_correlation_overflow_omega_c(engine):
+    # omega_c**2 overflows float64 -> FloatingPointError, not a raw OverflowError
+    m = SpinBosonModel(J0=1.0, omega_c=1e200, mu=1.0, s=1.0)
+    with pytest.raises(FloatingPointError):
+        engine.compute(m, T=0.1, eps=0.1)
+
+
+@pytest.mark.filterwarnings("error")
+def test_correlation_overflow_gamma(engine):
+    # math.gamma(s+1) overflows -> caught OverflowError -> FloatingPointError
+    m = SpinBosonModel(J0=1.0, omega_c=1.0, mu=1.0, s=172.0)
+    with pytest.raises(FloatingPointError):
+        engine.compute(m, T=0.1, eps=0.1)
+
+
+def test_compute_final_guard_catches_nonfinite_correlation():
+    # isolate compute()'s final guard: a subclass returns a non-finite correlation
+    # directly (bypassing the analytic path's own overflow check)
+    class _NanEngine(GaussianCumulantEngine):
+        def correlation_function(self, model, tau):
+            return np.full(np.shape(tau), np.nan, dtype=np.complex128)
+
+    m = SpinBosonModel(J0=0.5, omega_c=5.0, mu=1.0)
+    with pytest.raises(FloatingPointError):
+        _NanEngine().compute(m, T=0.2, eps=0.1)
