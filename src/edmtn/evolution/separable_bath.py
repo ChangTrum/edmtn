@@ -136,8 +136,11 @@ class SeparableBathEvolution:
         record_every : int
             Record every ``record_every``-th sub-bath (and always the last).
         compress : bool
-            If ``False``, skip compression (exact, exponential bonds; small ``K``
-            reference checks).
+            If ``False``, genuinely SKIP compression after each fold -- exact, with
+            exponentially growing bonds (small-``K`` reference checks).  ``True`` compresses
+            every fold: with ``cutoff=0`` an exact canonicalise + full-SVD recompression,
+            with ``cutoff>0`` a truncating one.  (Previously ``False`` silently ran a
+            zero-cutoff recompression rather than skipping.)
         convert : callable, optional
             Backend/precision cast applied to every array fed into the MPS
             (initial state, system superoperators, kernel sites).  Defaults to
@@ -196,17 +199,17 @@ class SeparableBathEvolution:
             mpo_sites = [
                 convert(s) for s in kernel_engine.for_sub_bath(k).get_kernel_mpo(n_sites).site_tensors
             ]
-            # exact fold (compress=False) is reproduced by a zero cutoff
-            mps = mps.fold(
-                mpo_sites,
-                cutoff=cutoff if compress else 0.0,
-                cutoff_mode=cutoff_mode,
-                method=self.compress_method,
-                max_bond=max_bond if compress else None,
-                decomp=self.compress_decomp,
-                decomp_q=self.compress_decomp_q,
-                canon=self.compress_canon,
-            )
+            mps = mps.fold_raw(mpo_sites)              # lossless MPO x MPS growth
+            if compress:                               # compress=False genuinely skips compression
+                mps = mps.compress(
+                    cutoff=cutoff,
+                    cutoff_mode=cutoff_mode,
+                    method=self.compress_method,
+                    max_bond=max_bond,
+                    decomp=self.compress_decomp,
+                    decomp_q=self.compress_decomp_q,
+                    canon=self.compress_canon,
+                )
 
             # release the previous sub-bath's GPU intermediates (no-op on CPU)
             if memory is not None:

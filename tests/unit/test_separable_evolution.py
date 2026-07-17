@@ -130,11 +130,17 @@ class _SubModel:
 # --------------------------------------------------------------------------
 
 def test_zero_cutoff_compression_preserves_state():
+    # P1-13: compress=False now GENUINELY skips compression (exponential bonds); compress=True,
+    # cutoff=0 does an exact canonicalise + full-SVD recompression. The two exact
+    # representations must agree on the reduced state and the recorded fold axis (their bond
+    # dimensions may differ -- different-rank exact representations).
     model = GaudinModel(g=0.7, K=2)
     eps, n_steps = 0.1, 3
-    exact = run_edm(model, eps, n_steps, order=2, compress=False).density_matrices[-1]
-    compressed = run_edm(model, eps, n_steps, order=2, compress=True, cutoff=0.0).density_matrices[-1]
-    np.testing.assert_allclose(compressed, exact, atol=1e-9)
+    raw = run_edm(model, eps, n_steps, order=2, compress=False)
+    comp = run_edm(model, eps, n_steps, order=2, compress=True, cutoff=0.0)
+    np.testing.assert_allclose(comp.density_matrices[-1], raw.density_matrices[-1], atol=1e-9)
+    assert comp.recorded_L == raw.recorded_L
+    assert comp.n_sub_baths == raw.n_sub_baths
 
 
 def test_trace_preserved_under_hard_cutoff():

@@ -17,9 +17,12 @@ Representation (the validated Phase-0.0 mapping):
   the ``rho0`` contraction leg ``RHO0`` -- are ordinary dangling indices.
 
 Both evolution engines are covered: the separable bath grows every bond by a
-sub-bath MPO fold (:meth:`QuimbEDM.fold`), the single (Gaussian) bath grows the
-chain by one new time-site per step (:meth:`QuimbEDM.step`); both then share
-:meth:`QuimbEDM.compress`.
+sub-bath MPO fold (:meth:`QuimbEDM.fold_raw`, a lossless index fusion), the single
+(Gaussian) bath grows the chain by one new time-site per step (:meth:`QuimbEDM.step`);
+both then share :meth:`QuimbEDM.compress`, which the evolution loop applies
+*conditionally* so ``compress=False`` genuinely skips compression rather than doing a
+zero-cutoff recompression.  :meth:`QuimbEDM.fold` is the backward-compatible
+fold-then-compress combo.
 
 The fold/step reproduce the **two-stage** path (the per-site contraction that
 ``_apply_sub_bath`` / ``apply_step`` do with ``tensordot``, then a quimb
@@ -41,7 +44,8 @@ class QuimbEDM:
 
     Mirrors the parts of :class:`EDMMPS` the evolution loop and observables touch
     (``num_sites`` / ``max_bond`` / ``bond_dims`` / ``reduced_density_matrix``),
-    plus :meth:`fold` (the per-sub-bath MPO x MPS contraction + compression).
+    plus :meth:`fold_raw` (the per-sub-bath MPO x MPS contraction, no compression) and
+    :meth:`fold` (fold_raw + :meth:`compress`, kept for back-compat).
     """
 
     def __init__(self, tn, n, d, d_phys, rho0_vec, meta=None):
@@ -177,15 +181,15 @@ class QuimbEDM:
 
     # -- separable fold (MPO x MPS contraction + compression) --------------
 
-    def fold(self, mpo_sites, *, cutoff, cutoff_mode, method, max_bond,
-             decomp="exact", decomp_q=2, canon="quimb"):
-        """Fold one sub-bath's combined-kernel MPO into the EDM, then compress.
+    def fold_raw(self, mpo_sites) -> "QuimbEDM":
+        """Fold one sub-bath's combined-kernel MPO into the EDM, WITHOUT compression.
 
         ``new[phi_up, (a_l, chi_l), (a_r, chi_r)] = sum_{phi_down}
-        T[phi_up, phi_down, a_l, a_r] G[phi_down, chi_l, chi_r]`` per site (exact,
-        the two-stage apply), the parallel ``(v, a)`` bonds fused into one, then a
-        quimb 1D compression (canonize + truncation sweep).  Returns a new
-        :class:`QuimbEDM`.
+        T[phi_up, phi_down, a_l, a_r] G[phi_down, chi_l, chi_r]`` per site (exact, the
+        two-stage apply), then each parallel ``(v, a)`` bond fused into one.  ``fuse_multibonds``
+        is a *lossless* index fusion -- there is NO canonicalisation / SVD / truncation here.  The
+        caller compresses separately (:meth:`compress`), so ``compress=False`` genuinely skips
+        compression.  Returns a new (uncompressed) :class:`QuimbEDM`; ``self`` is not mutated.
         """
         import quimb.tensor as qtn  # noqa: PLC0415
 
@@ -212,7 +216,18 @@ class QuimbEDM:
             site.add_tag(f"I{p}")
             folded.append(site)
         tn = qtn.TensorNetwork(folded)
-        tn.fuse_multibonds(inplace=True)            # (v{p}, a{p}) -> single fused bond
-        return QuimbEDM(tn, n, self.d, self.d_phys, self.rho0_vec, meta=self.meta).compress(
+        tn.fuse_multibonds(inplace=True)            # (v{p}, a{p}) -> single fused bond (lossless)
+        return QuimbEDM(tn, n, self.d, self.d_phys, self.rho0_vec, meta=self.meta)
+
+    def fold(self, mpo_sites, *, cutoff, cutoff_mode, method, max_bond,
+             decomp="exact", decomp_q=2, canon="quimb"):
+        """Fold one sub-bath's MPO into the EDM, then compress (fold_raw + compress combo).
+
+        Backward-compatible convenience wrapper preserving the original ``fold + compress``
+        semantics for direct callers (tests, ``examples/``).  When ``compress=False`` must
+        genuinely skip compression, call :meth:`fold_raw` and then :meth:`compress`
+        conditionally instead (as :meth:`SeparableBathEvolution.run` does).
+        """
+        return self.fold_raw(mpo_sites).compress(
             cutoff=cutoff, cutoff_mode=cutoff_mode, method=method, max_bond=max_bond,
             decomp=decomp, decomp_q=decomp_q, canon=canon)
