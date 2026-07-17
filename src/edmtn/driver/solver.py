@@ -59,8 +59,11 @@ class SolverResult:
         single-bath Track 1 = alias of ``time_bond_dims``; separable Track 1 = alias of
         ``sub_bath_bond_dims``; Track 2 = ``[]`` (no boundary-MPS bond history).  Prefer the
         axis-explicit fields above for new code.
-    truncation_errors : list[float]
-        Largest discarded weight per recorded step/fold.
+    truncation_errors : list[float | None]
+        Pipeline-aligned placeholders: per physical time step for single-bath Track 1, per
+        recorded sub-bath count for separable Track 1.  Values are None because truncation
+        loss is not currently measured; Track 2 returns an empty list because it performs no
+        truncation.
     expansion_order : int
         The resolved Trotter order actually used (``1`` or ``2``).
     observables : dict[str, ndarray]
@@ -76,7 +79,7 @@ class SolverResult:
     times: object
     polarization: object
     bond_dims: list
-    truncation_errors: list
+    truncation_errors: list[float | None]
     expansion_order: int
     observables: dict = field(default_factory=dict)
     mps: object = None

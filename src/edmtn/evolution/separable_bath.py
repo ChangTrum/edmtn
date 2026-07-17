@@ -52,8 +52,9 @@ class SeparableEvolutionResult:
         Maximum internal bond dimension after folding in sub-bath ``L``.
     density_matrices : list[ndarray] or None
         ``rho_L(T)`` at each recorded ``L`` (if ``record_rho``).
-    truncation_errors : list[float]
-        Largest per-bond discarded weight when folding in sub-bath ``L``.
+    truncation_errors : list[float | None]
+        One entry per recorded sub-bath count ``L``; each value is None because discarded
+        weight is not currently measured.
     """
 
     mps: object
@@ -61,7 +62,7 @@ class SeparableEvolutionResult:
     recorded_L: list = field(default_factory=list)
     bond_dims: list = field(default_factory=list)
     density_matrices: list | None = None
-    truncation_errors: list = field(default_factory=list)
+    truncation_errors: list[float | None] = field(default_factory=list)
 
 
 class SeparableBathEvolution:
@@ -186,7 +187,7 @@ class SeparableBathEvolution:
             if L == n_fold or (L % record_every == 0):
                 result.recorded_L.append(L)
                 result.bond_dims.append(mps.max_bond)
-                result.truncation_errors.append(0.0)
+                result.truncation_errors.append(None)  # discarded weight not measured (P0-9 phase 1)
                 if record_rho:
                     result.density_matrices.append(mps.reduced_density_matrix())
 

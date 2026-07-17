@@ -105,3 +105,31 @@ def test_gaudin_track2_axes(monkeypatch):
     assert res.sub_bath_final_density_matrices is None
     assert res.final_time_bond_dims is None
     assert res.bond_dims == []
+
+
+# -- truncation_errors are honest None placeholders, not fabricated zeros (P0-9) --------
+
+def test_spinboson_truncation_errors_are_none_placeholders():
+    # cutoff>0 + a real bond cap: truncation genuinely happens, yet the field is None
+    # ("not measured"), never a fabricated 0.0 ("confirmed lossless")
+    res = EDMSolver.from_model(_sb(), T=0.3, eps=0.1, expansion_order=2,
+                               cutoff=1e-6, max_bond=8).solve()
+    assert len(res.truncation_errors) == len(res.times)
+    assert all(x is None for x in res.truncation_errors)
+    assert res.truncation_errors == res.evolution.truncation_errors
+
+
+def test_gaudin_track1_truncation_errors_are_none_placeholders():
+    model = GaudinModel(g=0.8, K=3)
+    res = EDMSolver.from_model(model, T=0.3, eps=0.1, expansion_order=2,
+                               cutoff=1e-6, max_bond=32).solve(channel=3)
+    assert len(res.truncation_errors) == len(res.sub_bath_counts)
+    assert all(x is None for x in res.truncation_errors)
+    assert res.truncation_errors == res.evolution.truncation_errors
+
+
+def test_gaudin_track2_truncation_errors_empty(monkeypatch):
+    _force_numpy(monkeypatch)
+    res = EDMSolver.from_model(GaudinModel(g=0.8, K=2), T=0.2, eps=0.1,
+                               expansion_order=2, backend="hpc").solve(channel=3)
+    assert res.truncation_errors == []

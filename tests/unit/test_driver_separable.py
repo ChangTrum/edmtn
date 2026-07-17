@@ -239,7 +239,7 @@ def test_timestep_convergence_inherits_all_config_fields(monkeypatch):
         # coarse (outer) and fine (inner) runs DISTINCT labels so metadata can't just copy one
         label = "coarse-stub" if self is solver else "fine-stub"
         return SolverResult(times=np.array([0.1, 0.2]), polarization=np.array([0.5, 0.4]),
-                            bond_dims=[1], truncation_errors=[0.0],
+                            bond_dims=[1], truncation_errors=[None],
                             expansion_order=self.config.expansion_order, backend=label)
 
     monkeypatch.setattr(solver_mod.EDMSolver, "solve", stub_solve)
