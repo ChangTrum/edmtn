@@ -6,7 +6,7 @@ Importing this package registers the available models with
 
 from __future__ import annotations
 
-from .base import AbstractOQSModel
+from .base import AbstractOQSModel, validate_channel
 from .gaudin import (
     COUPLING_PROFILES,
     GaudinBathParams,
@@ -26,6 +26,7 @@ ModelRegistry.register("gaudin", GaudinModel)
 
 __all__ = [
     "AbstractOQSModel",
+    "validate_channel",
     "ModelRegistry",
     "SpinBosonModel",
     "SpinBosonBathParams",

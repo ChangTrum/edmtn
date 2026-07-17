@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..models.base import validate_channel
 from ..observables.convergence import is_converged, max_history_deviation
 from ..observables.extractor import ObservableExtractor
 from .auto_config import SolverConfig, build_pipeline, resolve_config_for_model
@@ -138,8 +139,11 @@ class EDMSolver:
             Mapping ``name -> operator_fn(t)`` evaluated as ``Tr[O(t) rho(t)]``
             from the recorded reduced states (requires ``config.record_rho``).
         channel : int
-            Coupling channel whose polarization history is returned.
+            Coupling channel (1-based) whose polarization history is returned.
         """
+        # validate once, before any backend/bath dispatch or evolution -- every inner path
+        # then receives a normalised Python int (no negative-index channel selection)
+        channel = validate_channel(channel, len(self.model.coupling_operators()))
         if self.config.backend == "hpc":
             return self._solve_hpc(observables, channel=channel)
         if self.model.bath_type == "separable":

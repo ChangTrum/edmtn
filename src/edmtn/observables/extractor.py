@@ -86,9 +86,12 @@ class ObservableExtractor:
         """
         if order not in (1, 2):
             raise ValueError(f"order must be 1 or 2, got {order}")
+        # same shared validator as the solver/HPC path; the EDM-MPS carries d_phys = 2*n_ch+1
+        from ..models.base import validate_channel  # noqa: PLC0415
+        channel = validate_channel(channel, (mps.d_phys - 1) // 2)
         n = mps.num_sites
         sel = 2 * channel - 1  # S^+ selector of channel `a`
-        if not 0 < sel < mps.d_phys:
+        if not 0 < sel < mps.d_phys:  # internal consistency defense (type check is above)
             raise ValueError(f"channel {channel} out of range for d_phys={mps.d_phys}")
 
         zero_mats = [t[0] for t in mps.tensors]   # phi_up = 0 slices

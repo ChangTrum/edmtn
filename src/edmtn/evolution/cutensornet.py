@@ -351,6 +351,12 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
             "manual time-window blocking (time_windows) is wired but not yet "
             "implemented; B1 ships one-shot whole-spacetime. Use time_windows=None.")
 
+    # validate the channel with the SAME shared helper as the solver/extractor, BEFORE
+    # any expander build / network assembly / contraction (channel=None = skip polarization)
+    if channel is not None:
+        from ..models.base import validate_channel  # noqa: PLC0415
+        channel = validate_channel(channel, len(model.coupling_operators()))
+
     # Resolve the effective order locally (Layer 5 must not import the Layer-7 driver):
     # config default None inherits the model's time_step_order. Strictly validated so a
     # bool / float / out-of-range value is never silently treated as first order.

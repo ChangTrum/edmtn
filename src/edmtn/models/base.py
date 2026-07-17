@@ -13,9 +13,31 @@ override with a closed form.
 
 from __future__ import annotations
 
+import numbers
 from abc import ABC, abstractmethod
 
 import numpy as np
+
+
+def validate_channel(channel, n_channels: int) -> int:
+    """Validate a 1-based coupling-channel index and normalise it to a Python ``int``.
+
+    Shared by every public entry point that takes a ``channel`` -- the solver
+    (:class:`~edmtn.driver.solver.EDMSolver`), the HPC solve
+    (:func:`~edmtn.evolution.cutensornet.solve_cutensornet`), and the observable extractor
+    (:meth:`~edmtn.observables.extractor.ObservableExtractor.coupling_polarization_history`)
+    -- so an illegal channel fails identically everywhere (``ValueError``) instead of, e.g.,
+    ``channel=0`` silently selecting the last channel via a negative index, or a float/string
+    leaking ``IndexError``/``TypeError`` deep in an array index.  ``n_channels`` is the number
+    of coupling channels the caller exposes (``len(model.coupling_operators())`` for a model,
+    ``(mps.d_phys - 1) // 2`` for an EDM-MPS).
+    """
+    if isinstance(channel, bool) or not isinstance(channel, numbers.Integral):
+        raise ValueError(f"channel must be an integer in 1..{n_channels}, got {channel!r}")
+    c = int(channel)
+    if not 1 <= c <= n_channels:
+        raise ValueError(f"channel must be in 1..{n_channels}, got {channel!r}")
+    return c
 
 
 class AbstractOQSModel(ABC):
