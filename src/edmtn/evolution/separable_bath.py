@@ -132,22 +132,23 @@ class SeparableBathEvolution:
             (initial state, system superoperators, kernel sites).  Defaults to
             identity (CPU, complex128).
         sub_baths : int, optional
-            Fold in only the first ``sub_baths`` (strongest) sub-baths instead of
-            all ``K`` -- the paper's "first L spins" curves (Fig. 6).  Defaults to
-            all sub-baths.
+            Fold in only the first ``sub_baths`` sub-baths in the model's stored coupling
+            order, instead of all ``K`` -- the paper's "first L spins" curves (Fig. 6).
+            ``None`` (default) folds all ``K``.  An out-of-range / non-integer value raises
+            (no silent clamp; see :func:`~edmtn.models.base.validate_sub_baths`).
         memory : MemoryManager, optional
             GPU memory manager; its pool blocks are freed after each sub-bath so
             the O(K) outer loop does not accumulate VRAM (Sec. 8.4).  No-op on CPU.
         """
+        from ..models.base import validate_sub_baths  # noqa: PLC0415
+
         d = model.system_dim
         if convert is None:
             convert = lambda a: a  # noqa: E731
         order = self.expander.order
         n_sites = order * n_steps
         K = kernel_engine.K
-        n_fold = K if sub_baths is None else min(int(sub_baths), K)
-        if n_fold < 1:
-            raise ValueError(f"sub_baths must be >= 1, got {sub_baths}")
+        n_fold = validate_sub_baths(sub_baths, K)   # None -> K; K+1 / 2.9 / True -> ValueError
         d_phys = kernel_engine.d_phys
 
         rho0_vec = convert(model.initial_system_state().reshape(-1).astype(np.complex128))

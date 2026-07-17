@@ -162,7 +162,7 @@ class SolverConfig:
     compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass; N/A under 'hpc')
     compress_canon: str = "quimb"         # 'quimb'|'householder'|'cholqr' (canon QR; N/A under 'hpc')
     preset: str | None = None  # None|'balanced'|'robust' (cpu/gpu only; see docs/guides/recommended-config.md)
-    sub_baths: int | None = None  # separable bath only: fold/contract just the first L sub-baths (Fig. 6)
+    sub_baths: int | None = None  # separable only: fold the first L sub-baths in the model's stored coupling order (Fig. 6); None = all K
     backend: str = "cpu"   # 'cpu'|'gpu' -> numpy/cupy (Track 1); 'hpc' -> cuQuantum 2D contraction
     precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
     # -- backend='hpc' only; ignored otherwise --

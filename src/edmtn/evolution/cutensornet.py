@@ -60,6 +60,7 @@ def build_2d_network(model, expander, eps: float, n_steps: int, sub_baths=None):
     einsum-interleaved description consumed by every backend.
     """
     from ..kernels.separable_mpo import SeparableKernelEngine  # noqa: PLC0415
+    from ..models.base import validate_sub_baths  # noqa: PLC0415
 
     order = expander.order
     n_sites = order * n_steps
@@ -67,9 +68,7 @@ def build_2d_network(model, expander, eps: float, n_steps: int, sub_baths=None):
 
     kernel_engine = SeparableKernelEngine.from_model(model, n_steps * eps, eps)
     K = kernel_engine.K
-    n_fold = K if sub_baths is None else min(int(sub_baths), K)
-    if n_fold < 1:
-        raise ValueError(f"sub_baths must be >= 1, got {sub_baths}")
+    n_fold = validate_sub_baths(sub_baths, K)   # None -> K; K+1 / 2.9 / True -> ValueError
     d_phys = kernel_engine.d_phys
 
     # system families per column (newest-first), mirroring SeparableBathEvolution
@@ -351,11 +350,14 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
             "manual time-window blocking (time_windows) is wired but not yet "
             "implemented; B1 ships one-shot whole-spacetime. Use time_windows=None.")
 
-    # validate the channel with the SAME shared helper as the solver/extractor, BEFORE
-    # any expander build / network assembly / contraction (channel=None = skip polarization)
+    # validate channel + sub_baths with the SAME shared helpers as Track 1, BEFORE any
+    # expander build / network assembly / contraction (fail-fast; channel=None skips polarization)
+    from ..models.base import validate_channel, validate_sub_baths  # noqa: PLC0415
     if channel is not None:
-        from ..models.base import validate_channel  # noqa: PLC0415
         channel = validate_channel(channel, len(model.coupling_operators()))
+    # resolve the sub-bath count ONCE against the model's K (lightweight -- no kernel build);
+    # every time step then folds this same L, and out["sub_baths_used"] matches the network
+    n_fold = validate_sub_baths(config.sub_baths, model.bath_params().K)
 
     # Resolve the effective order locally (Layer 5 must not import the Layer-7 driver):
     # config default None inherits the model's time_step_order. Strictly validated so a
@@ -383,7 +385,7 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
         for m in range(1, N + 1):
             rho, metrics = reduced_density_matrix(
                 model, expander, config.eps, m, pathfinder=pathfinder,
-                sub_baths=config.sub_baths, executor=executor, dist=dist)
+                sub_baths=n_fold, executor=executor, dist=dist)   # already-resolved L, not the raw config
             rhos.append(rho)
             metrics_last = metrics
     finally:
@@ -405,6 +407,7 @@ def solve_cutensornet(model, config, *, channel: int | None = None,
         times=times, density_matrices=rhos, final_rho=rhos[-1],
         polarization=pol, error_metrics=metrics_last, mode="exact", pathfinder=pathfinder,
         ngpu=ngpu, rank=(dist["rank"] if dist is not None else 0),
+        sub_baths_used=n_fold,          # the resolved L actually folded (== network meta["n_fold"])
     )
 
 

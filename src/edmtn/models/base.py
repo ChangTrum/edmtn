@@ -40,6 +40,25 @@ def validate_channel(channel, n_channels: int) -> int:
     return c
 
 
+def validate_sub_baths(sub_baths, K: int) -> int:
+    """Resolve/validate the number of separable sub-baths to fold, against the model's ``K``.
+
+    ``None`` means "all ``K``".  Otherwise it must be a non-bool integer in ``1..K``, returned
+    as a Python ``int``.  There is NO silent clamp/truncation: an out-of-range value (``K+1``),
+    a float (``2.9``), a bool, or a string raises ``ValueError`` instead of quietly changing how
+    many bath spins are actually included.  Shared by Track 1, Track 2 and any direct evolution
+    entry point so all of them reject an illegal value identically.
+    """
+    if sub_baths is None:
+        return K
+    if isinstance(sub_baths, bool) or not isinstance(sub_baths, numbers.Integral):
+        raise ValueError(f"sub_baths must be None or an integer in 1..{K}, got {sub_baths!r}")
+    value = int(sub_baths)
+    if not 1 <= value <= K:
+        raise ValueError(f"sub_baths must be in 1..{K}, got {sub_baths!r}")
+    return value
+
+
 class AbstractOQSModel(ABC):
     """Base class for open-quantum-system models.
 

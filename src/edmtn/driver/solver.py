@@ -54,6 +54,10 @@ class SolverResult:
         The final EDM-MPS's internal bond dimensions along the *time* chain (``mps.bond_dims``).
         NOT aligned with ``times``: length is ``mps.num_sites - 1`` (``num_sites == order*n_steps``).
         ``None`` when there is no MPS (Track 2).
+    sub_baths_used : int or None
+        Separable Track 1 / Track 2: the actual number of sub-baths ``L`` folded (the resolved
+        ``sub_baths``; ``K`` when ``sub_baths=None``).  ``None`` for non-separable models -- so the
+        caller can tell how many bath spins were really included, without guessing from the request.
     bond_dims : list[int]
         **Legacy, pipeline-specific bond history** (kept for back-compat; powers ``max_bond``):
         single-bath Track 1 = alias of ``time_bond_dims``; separable Track 1 = alias of
@@ -93,6 +97,7 @@ class SolverResult:
     sub_bath_bond_dims: object = None                # separable T1: D_L (∥ sub_bath_counts)
     sub_bath_final_density_matrices: object = None   # separable T1: rho_L(T) (∥ sub_bath_counts, if record_rho)
     final_time_bond_dims: object = None              # final EDM-MPS internal bonds along the time chain
+    sub_baths_used: int | None = None                # actual number of sub-baths folded (None if N/A)
 
     @property
     def max_bond(self) -> int:
@@ -303,6 +308,7 @@ class EDMSolver:
             backend=label,
             density_matrices=out["density_matrices"],
             error_metrics=out["error_metrics"],
+            sub_baths_used=out["sub_baths_used"],
         )
 
     # -- separable bath (outer-loop recursion) ----------------------------
@@ -368,6 +374,7 @@ class EDMSolver:
             sub_bath_bond_dims=ev.bond_dims,
             sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
             final_time_bond_dims=ev.mps.bond_dims,
+            sub_baths_used=ev.n_sub_baths,                         # actual L folded (== validate_sub_baths)
         )
 
     # -- convergence helpers ----------------------------------------------
@@ -403,6 +410,8 @@ class EDMSolver:
             "tolerance": tol,
             "coarse_backend": coarse.backend,    # ACTUAL executed labels (reveal GPU->CPU fallback)
             "fine_backend": fine.backend,
+            "coarse_sub_baths_used": coarse.sub_baths_used,  # ACTUAL L folded (None-request -> K),
+            "fine_sub_baths_used": fine.sub_baths_used,       # taken from the results, not the request
         }
         return TimestepConvergence(dev, ok, metadata)
 
