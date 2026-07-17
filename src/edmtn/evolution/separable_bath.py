@@ -33,6 +33,17 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..expansion.second_order import SecondOrderExpander
+from ._validation import (
+    validate_bool,
+    validate_cutoff_mode,
+    validate_expansion_order,
+    validate_final_time,
+    validate_nonnegative_finite_float,
+    validate_optional_positive_int,
+    validate_positive_finite_float,
+    validate_positive_int,
+    validate_separable_bath_kernel,
+)
 from .mps_utils import EDMMPS
 
 
@@ -139,16 +150,33 @@ class SeparableBathEvolution:
         memory : MemoryManager, optional
             GPU memory manager; its pool blocks are freed after each sub-bath so
             the O(K) outer loop does not accumulate VRAM (Sec. 8.4).  No-op on CPU.
+
+        All arguments are validated at the entry point (before any tensor is built or the
+        kernel is read), so a direct call bypassing the driver still fails loudly with a
+        clear ``ValueError`` -- see :mod:`edmtn.evolution._validation`.
         """
         from ..models.base import validate_sub_baths  # noqa: PLC0415
+
+        # -- entry validation (before convert / _build_system_mps / kernel read / QuimbEDM) --
+        eps = validate_positive_finite_float("eps", eps)
+        n_steps = validate_positive_int("n_steps", n_steps)
+        validate_final_time(eps, n_steps)
+        cutoff = validate_nonnegative_finite_float("cutoff", cutoff)
+        max_bond = validate_optional_positive_int("max_bond", max_bond)
+        record_rho = validate_bool("record_rho", record_rho)
+        compress = validate_bool("compress", compress)
+        record_every = validate_positive_int("record_every", record_every)
+        cutoff_mode = validate_cutoff_mode("cutoff_mode", cutoff_mode)
+        order = validate_expansion_order("evolution order", self.expander.order)
+        # structural model/kernel check: d_phys, matching K, for_sub_bath interface
+        K = validate_separable_bath_kernel(model, kernel_engine)
+        # sub_baths only after model/kernel K agree; None -> K; K+1 / 2.9 / True -> ValueError
+        n_fold = validate_sub_baths(sub_baths, K)
 
         d = model.system_dim
         if convert is None:
             convert = lambda a: a  # noqa: E731
-        order = self.expander.order
         n_sites = order * n_steps
-        K = kernel_engine.K
-        n_fold = validate_sub_baths(sub_baths, K)   # None -> K; K+1 / 2.9 / True -> ValueError
         d_phys = kernel_engine.d_phys
 
         rho0_vec = convert(model.initial_system_state().reshape(-1).astype(np.complex128))

@@ -27,6 +27,17 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..expansion.first_order import FirstOrderExpander
+from ._validation import (
+    validate_bool,
+    validate_cutoff_mode,
+    validate_expansion_order,
+    validate_final_time,
+    validate_nonnegative_finite_float,
+    validate_optional_positive_int,
+    validate_positive_finite_float,
+    validate_positive_int,
+    validate_single_bath_kernel,
+)
 
 
 @dataclass
@@ -119,17 +130,28 @@ class SingleBathEvolution:
             system superoperators).  Use it to move the computation onto another
             backend or precision, e.g. ``lambda a: cupy.asarray(a, cupy.complex64)``
             for single-precision GPU.  Defaults to identity (CPU, complex128).
+
+        All arguments are validated at the entry point (before any tensor is built or the
+        kernel is read), so a direct call bypassing the driver still fails loudly with a
+        clear ``ValueError`` -- see :mod:`edmtn.evolution._validation`.
         """
+        # -- entry validation (before convert / initial_system_state / kernel read / QuimbEDM) --
+        eps = validate_positive_finite_float("eps", eps)
+        n_steps = validate_positive_int("n_steps", n_steps)
+        validate_final_time(eps, n_steps)
+        cutoff = validate_nonnegative_finite_float("cutoff", cutoff)
+        max_bond = validate_optional_positive_int("max_bond", max_bond)
+        record_rho = validate_bool("record_rho", record_rho)
+        compress = validate_bool("compress", compress)
+        cutoff_mode = validate_cutoff_mode("cutoff_mode", cutoff_mode)
+        order = validate_expansion_order("evolution order", self.expander.order)
+        # structural model/kernel check: d_phys, get_kernel_mpo, and matching order (both ways)
+        validate_single_bath_kernel(model, kernel_engine, order)
+
         d = model.system_dim
         if convert is None:
             convert = lambda a: a  # noqa: E731
         rho0_vec = convert(model.initial_system_state().reshape(-1).astype(np.complex128))
-        order = self.expander.order
-        if order == 2 and getattr(kernel_engine, "order", 1) != 2:
-            raise ValueError(
-                "second-order evolution needs a second-order kernel engine "
-                "(GaussianKernelEngine(..., order=2))"
-            )
 
         result = EvolutionResult(mps=None)
         if record_rho:

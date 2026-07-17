@@ -44,6 +44,16 @@ def test_ratio_overflow_underflow_rejected(eps, T):
         SolverConfig(eps=eps, T=T)
 
 
+@pytest.mark.parametrize("field", ["eps", "T", "cutoff"])
+def test_huge_int_float_overflow_rejected(field):
+    # a huge Python int (10**400) is a real number but overflows float(); the float
+    # conversion must raise our ValueError, never leak the raw OverflowError (P1-11 /
+    # the direct-call vs driver-path consistent-exception contract).
+    kwargs = {"eps": 0.1, "T": 0.5, field: 10 ** 400}
+    with pytest.raises(ValueError):
+        SolverConfig(**kwargs)
+
+
 # -- truncation / bond parameters ------------------------------------------
 
 @pytest.mark.parametrize("cutoff", [-1, np.nan, np.inf])

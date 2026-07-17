@@ -18,6 +18,7 @@ from ..expansion.first_order import FirstOrderExpander
 from ..expansion.second_order import SecondOrderExpander
 from ..kernels.gaussian_mpo import GaussianKernelEngine
 from ..kernels.separable_mpo import SeparableKernelEngine
+from ..evolution._validation import CUTOFF_MODES as _CUTOFF_MODES
 from ..evolution.separable_bath import SeparableBathEvolution
 from ..evolution.single_bath import SingleBathEvolution
 
@@ -35,7 +36,8 @@ _NSTEPS_RTOL = 1e-9  # T/eps must equal an integer within this relative toleranc
 # are the values EDMTN exposes and tests):
 _BACKENDS = ("cpu", "numpy", "gpu", "cupy", "hpc")   # solver._resolve_backend + hpc path
 _PRECISIONS = ("f64", "mixed")                        # solver._resolve_backend
-_CUTOFF_MODES = ("abs", "rel", "sum2", "rsum2", "sum1", "rsum1")  # quimb-native string modes
+# _CUTOFF_MODES is imported from evolution._validation (single source of truth shared with
+# the direct evolution run() entry points, so the driver/direct contracts cannot drift).
 _COMPRESS_METHODS = ("zipup", "dm", "direct")         # EDMTN's tested subset of quimb 1D-compress
 _COMPRESS_DECOMPS = ("exact", "rsvd")                 # quimb_decomp.compress_opts_for
 _COMPRESS_CANONS = ("quimb", "householder", "cholqr")  # quimb_decomp._CANON_METHOD
@@ -52,10 +54,22 @@ def _is_real(value) -> bool:
     return isinstance(value, numbers.Real) and not isinstance(value, bool)
 
 
+def _to_float(name: str, value) -> float:
+    """``float(value)`` with ``TypeError`` / ``ValueError`` / ``OverflowError`` -> ``ValueError``.
+
+    A huge Python ``int`` (e.g. ``10**400``) is a real number but overflows ``float()``; the
+    honest response is a project ``ValueError``, not a leaked ``OverflowError`` (cf. P0-2).
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be a finite real number, got {value!r}") from None
+
+
 def _positive_finite_float(name: str, value) -> float:
     if not _is_real(value):
         raise ValueError(f"{name} must be a real number, got {value!r}")
-    v = float(value)
+    v = _to_float(name, value)
     if not math.isfinite(v) or v <= 0.0:
         raise ValueError(f"{name} must be finite and > 0, got {value!r}")
     return v
@@ -64,7 +78,7 @@ def _positive_finite_float(name: str, value) -> float:
 def _nonnegative_finite_float(name: str, value) -> float:
     if not _is_real(value):
         raise ValueError(f"{name} must be a real number, got {value!r}")
-    v = float(value)
+    v = _to_float(name, value)
     if not math.isfinite(v) or v < 0.0:
         raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
     return v
