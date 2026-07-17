@@ -24,26 +24,53 @@ from .auto_config import SolverConfig, build_pipeline, resolve_config_for_model
 class SolverResult:
     """Result of :meth:`EDMSolver.solve`.
 
+    Every array below names its own horizontal axis, so callers never have to inspect the
+    internal ``evolution`` object to know what an index means.
+
     Attributes
     ----------
     times : ndarray
-        Step times ``[eps, 2 eps, ..., T]`` (ascending).
+        Physical time grid ``[eps, 2 eps, ..., T]`` (ascending).
     polarization : ndarray
         Coupling-channel ``<S_a(t)>`` over ``times`` (Eq. F2).
+    density_matrices : list[ndarray] or None
+        ``rho(t)`` aligned 1:1 with ``times`` (so ``len == len(times)``), or ``None`` when the
+        pipeline produces no time-axis reduced-state history.  Single-bath: present whenever the
+        evolution recorded reduced states (``record_rho``, custom observables, OR second order --
+        the ρ(t) is exposed as-is, not re-hidden).  Track 2: always present (first-class output).
+        **Separable/Gaudin Track 1: always None** -- its per-``L`` states are ``rho_L(T)`` (axis =
+        sub-bath count, not time) and live in ``sub_bath_final_density_matrices``, never here.
+    time_bond_dims : list[int] or None
+        Max bond dimension after each *physical time step* (``len == len(times)``), or ``None`` if
+        the pipeline has no per-time-step bond history (Track 1 separable, Track 2).
+    sub_bath_counts : list[int] or None
+        Separable Track 1: the recorded sub-bath counts ``L`` (``evolution.recorded_L``).
+    sub_bath_bond_dims : list[int] or None
+        Separable Track 1: ``D_L`` after folding in ``L`` sub-baths, aligned with ``sub_bath_counts``.
+    sub_bath_final_density_matrices : list[ndarray] or None
+        Separable Track 1: ``rho_L(T)`` per recorded ``L`` (aligned with ``sub_bath_counts``); only
+        present when ``record_rho``.  ``None`` otherwise / on other pipelines.
+    final_time_bond_dims : list[int] or None
+        The final EDM-MPS's internal bond dimensions along the *time* chain (``mps.bond_dims``).
+        NOT aligned with ``times``: length is ``mps.num_sites - 1`` (``num_sites == order*n_steps``).
+        ``None`` when there is no MPS (Track 2).
     bond_dims : list[int]
-        Maximum bond dimension after each step.
+        **Legacy, pipeline-specific bond history** (kept for back-compat; powers ``max_bond``):
+        single-bath Track 1 = alias of ``time_bond_dims``; separable Track 1 = alias of
+        ``sub_bath_bond_dims``; Track 2 = ``[]`` (no boundary-MPS bond history).  Prefer the
+        axis-explicit fields above for new code.
     truncation_errors : list[float]
-        Largest discarded weight per step.
+        Largest discarded weight per recorded step/fold.
     expansion_order : int
-        The resolved Trotter order actually used (``1`` or ``2``) -- the model's
-        ``time_step_order`` unless the config overrode it.  Recorded so the result's
-        metadata matches the algorithm that produced it.
+        The resolved Trotter order actually used (``1`` or ``2``).
     observables : dict[str, ndarray]
-        Custom observable histories (empty unless requested + ``record_rho``).
+        Custom observable histories (empty unless requested + reduced states recorded).
     mps : EDMMPS
-        Final EDM-MPS.
+        Final EDM-MPS (``None`` on Track 2).
     evolution : EvolutionResult
-        Raw Layer-5 output.
+        Raw Layer-5 output (internal; the top-level fields above are the public contract).
+    error_metrics : dict or None
+        Track 2 only: reference error metrics (‖ρ−ρ†‖ / |Tr ρ−1| + optimizer stats).
     """
 
     times: object
@@ -55,8 +82,14 @@ class SolverResult:
     mps: object = None
     evolution: object = None
     backend: str = ""
-    density_matrices: object = None  # ρ(t) history (the hpc track returns this first-class)
+    density_matrices: object = None  # rho(t) aligned with times, else None (see docstring)
     error_metrics: dict | None = None  # hpc only: ‖ρ−ρ†‖ / |Tr ρ−1| (+ slices/flops or discarded weight)
+    # -- P0-8 axis-explicit fields (all default None; keep manual SolverResult(...) working) --
+    time_bond_dims: object = None                    # max bond per physical time step (∥ times)
+    sub_bath_counts: object = None                   # separable T1: recorded L values
+    sub_bath_bond_dims: object = None                # separable T1: D_L (∥ sub_bath_counts)
+    sub_bath_final_density_matrices: object = None   # separable T1: rho_L(T) (∥ sub_bath_counts, if record_rho)
+    final_time_bond_dims: object = None              # final EDM-MPS internal bonds along the time chain
 
     @property
     def max_bond(self) -> int:
@@ -226,13 +259,16 @@ class EDMSolver:
         return SolverResult(
             times=times,
             polarization=pol,
-            bond_dims=ev.bond_dims,
+            bond_dims=ev.bond_dims,                        # legacy alias of time_bond_dims here
             truncation_errors=ev.truncation_errors,
             expansion_order=cfg.expansion_order,
             observables=extra,
             mps=ev.mps,
             evolution=ev,
             backend=backend_label,
+            density_matrices=ev.density_matrices,          # rho(t) if the evolution recorded it, else None
+            time_bond_dims=ev.bond_dims,                   # max bond per physical time step
+            final_time_bond_dims=ev.mps.bond_dims,         # final MPS internal bonds along time
         )
 
     # -- hpc track (cuQuantum 2D one-shot contraction) --------------------
@@ -272,15 +308,19 @@ class EDMSolver:
         """Solve a separable-bath model (Eq. 21 outer loop over sub-baths).
 
         Returns the all-times coupling-channel polarization for the full bath
-        (``<S_a(t)>`` vs ``t``; channel ``3`` is ``<S_z>`` for the Gaudin model).
-        ``bond_dims`` reports the maximum bond after folding in each sub-bath;
-        the per-time bond dimension ``D_t`` (Fig. 6b) is ``result.mps.bond_dims``,
-        and per-sub-bath final states / bonds are on ``result.evolution``.
+        (``<S_a(t)>`` vs ``t``; channel ``3`` is ``<S_z>`` for the Gaudin model).  The
+        per-``L`` fold records are published at the top level (no need to read
+        ``result.evolution``): the sub-bath counts ``L`` on ``result.sub_bath_counts``,
+        ``D_L`` on ``result.sub_bath_bond_dims``, ``rho_L(T)`` on
+        ``result.sub_bath_final_density_matrices`` (when ``record_rho``), and the final
+        EDM-MPS's per-time internal bonds ``D_t`` (Fig. 6b) on ``result.final_time_bond_dims``.
+        There is no time-axis ``rho(t)`` history, so ``result.density_matrices`` is ``None``.
         """
         if observables:
             raise NotImplementedError(
                 "custom per-time observables are not supported for separable baths; "
-                "use channel polarization, or read result.evolution.density_matrices"
+                "use the channel polarization, or run with record_rho=True and read "
+                "result.sub_bath_final_density_matrices (the per-L rho_L(T))"
             )
         cfg = self.config
         convert, memory, backend_label = self._resolve_backend()
@@ -313,13 +353,18 @@ class EDMSolver:
         return SolverResult(
             times=times,
             polarization=pol,
-            bond_dims=ev.bond_dims,
+            bond_dims=ev.bond_dims,                            # legacy alias of sub_bath_bond_dims here
             truncation_errors=ev.truncation_errors,
             expansion_order=cfg.expansion_order,
             observables={},
             mps=ev.mps,
             evolution=ev,
             backend=backend_label,
+            # density_matrices stays None: the per-L states below are rho_L(T), not rho(t)
+            sub_bath_counts=ev.recorded_L,
+            sub_bath_bond_dims=ev.bond_dims,
+            sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
+            final_time_bond_dims=ev.mps.bond_dims,
         )
 
     # -- convergence helpers ----------------------------------------------

@@ -114,12 +114,14 @@ def test_result_carries_mps_and_subbath_records():
     res = EDMSolver.from_model(
         model, T=0.4, eps=0.1, expansion_order=2, cutoff=1e-8, record_rho=True
     ).solve(channel=3)
-    # bond_dims is per sub-bath L (length K), D_t available via the final MPS
-    assert len(res.bond_dims) == 6
+    # the per-L fold records are published at the top level -- no need to read res.evolution
+    assert res.sub_bath_counts[-1] == 6
+    assert len(res.sub_bath_bond_dims) == 6
+    assert len(res.sub_bath_final_density_matrices) == 6
     assert res.mps is not None
+    assert res.final_time_bond_dims == res.mps.bond_dims
     assert len(res.mps.bond_dims) == res.mps.num_sites - 1
-    assert res.evolution.recorded_L[-1] == 6
-    assert len(res.evolution.density_matrices) == 6
+    assert res.bond_dims == res.sub_bath_bond_dims          # legacy alias here
 
 
 def test_custom_observables_rejected_for_separable():
