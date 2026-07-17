@@ -262,14 +262,19 @@ class EDMSolver:
             convert=convert,
             memory=memory,
         )
-        _, pol = ObservableExtractor.coupling_polarization_history(
+        _, raw_pol = ObservableExtractor.coupling_polarization_history(
             ev.mps, cfg.eps, channel=channel, order=cfg.expansion_order
         )
-        # The separable EDM's open-arm interventions sit one step earlier than the
-        # single-bath grid: the sweep yields <S_a(t)> at t = 0, eps, ..., (N-1) eps
-        # (matching Fig. 6, which starts at t = 0 with <S_z> = 1/2).  The final-time
-        # state is available as result.evolution.density_matrices[-1].
-        times = cfg.eps * np.arange(len(pol))
+        # The Eq.-F2 sweep yields <S_a(t)> at t = 0, eps, ..., (N-1) eps (measured *before*
+        # each Trotter step).  Put it on the PUBLIC axis eps, 2eps, ..., T -- the axis
+        # spin-boson, Track 2 and the SolverResult docstring already use -- by dropping the
+        # t=0 point and appending the final-time value Tr[S_a(T) rho(T)] read from the final
+        # MPS (backend-safe via ObservableExtractor.expectation; no record_rho needed).
+        N = cfg.n_steps
+        Sop = self.model.coupling_operators_at(N * cfg.eps)[channel - 1]
+        p_T = float(ObservableExtractor.expectation(ev.mps, Sop).real)
+        pol = np.concatenate((raw_pol[1:], np.asarray([p_T], dtype=np.float64)))
+        times = cfg.eps * np.arange(1, N + 1, dtype=np.float64)
         return SolverResult(
             times=times,
             polarization=pol,

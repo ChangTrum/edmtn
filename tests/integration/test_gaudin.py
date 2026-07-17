@@ -36,8 +36,10 @@ def test_pipeline_runs_and_depolarises(order):
     res = _solve(8, order=order)
     n = res.times.size
     assert n > 0 and res.polarization.shape == (n,)
-    # central spin starts polarised along +z and the spin bath depolarises it
-    assert np.isclose(res.polarization[0], 0.5, atol=1e-6)
+    # public axis is eps, 2eps, ..., T
+    assert np.isclose(res.times[0], 0.1) and np.isclose(res.times[-1], 1.0)
+    # first public time is one step in (eps); central spin still near +z, then depolarises
+    assert res.polarization[0] > 0.45
     assert res.polarization[-1] < res.polarization[0]
     # stays physical
     assert np.all(res.polarization <= 0.5 + 1e-3)

@@ -90,8 +90,10 @@ def test_sz_trajectory_matches_exact(K, order):
     res = EDMSolver.from_model(
         model, T=eps * n_steps, eps=eps, expansion_order=order, cutoff=0.0, backend="cpu"
     ).solve(channel=3)  # channel 3 = S_z
-    ref = exact_sz_trajectory(model, eps, n_steps, order)
-    np.testing.assert_allclose(res.times, eps * np.arange(n_steps), atol=1e-12)
+    # public axis is eps..T; exact_sz_trajectory measures *before* each step, so [1:] of one
+    # extra step gives the exact <S_z> at t = eps, 2eps, ..., T
+    ref = exact_sz_trajectory(model, eps, n_steps + 1, order)[1:]
+    np.testing.assert_allclose(res.times, eps * np.arange(1, n_steps + 1), atol=1e-12)
     np.testing.assert_allclose(res.polarization, ref, atol=1e-9)
 
 

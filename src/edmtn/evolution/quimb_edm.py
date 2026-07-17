@@ -195,7 +195,11 @@ class QuimbEDM:
             G = self.tn[f"I{p}"]                    # inds (k{p}, left, right)
             T = mpo_sites[p]                        # (phi_up, phi_down, a_l, a_r)
             inds = [f"u{p}", f"k{p}"]               # u: new phys (phi_up); k: down (shared with G)
-            if p == 0:
+            if n == 1:
+                # single site is both first AND last: drop BOTH trivial MPO boundaries so no
+                # lateral a-index dangles (else to_edmmps sees an unhandled a0 -> ValueError)
+                T = T[:, :, 0, 0]
+            elif p == 0:
                 T = T[:, :, 0, :]                   # trivial left MPO bond -> OUT stays d**2
                 inds += [f"a{p}"]
             elif p == n - 1:
