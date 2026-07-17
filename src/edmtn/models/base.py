@@ -59,6 +59,38 @@ def validate_sub_baths(sub_baths, K: int) -> int:
     return value
 
 
+#: numerical tolerance for :meth:`AbstractOQSModel.validate` (Hermiticity, trace, PSD floor).
+#: Passed explicitly everywhere -- NumPy's ``allclose``/``isclose`` default ``rtol=1e-5`` is too
+#: loose for a fixed normalisation like the unit trace.
+_VALIDATE_TOL = 1e-8
+
+
+def _as_finite_operator(name: str, value, d: int) -> np.ndarray:
+    """Return ``value`` as a finite numeric ``(d, d)`` array, else raise ``ValueError``.
+
+    Model methods are user-supplied, so a malformed return (a Python list without ``.shape``,
+    a string/object array that would make ``np.isfinite`` raise ``TypeError``, a wrong shape)
+    must surface as a descriptive ``ValueError`` naming the field -- never an ``AttributeError``
+    / ``TypeError`` / ``LinAlgError`` leaking out of :meth:`AbstractOQSModel.validate`.  A
+    non-numeric dtype is rejected outright (``"1"`` is NOT coerced to a complex ``1``).
+    """
+    try:
+        arr = np.asarray(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} could not be read as a numeric array: {exc}") from exc
+    if arr.shape != (d, d):
+        raise ValueError(f"{name} shape {arr.shape} != ({d}, {d})")
+    if arr.dtype == object or not np.issubdtype(arr.dtype, np.number):
+        raise ValueError(f"{name} must be a numeric array, got dtype {arr.dtype!r}")
+    try:
+        finite = bool(np.all(np.isfinite(arr)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite numeric array: {exc}") from exc
+    if not finite:
+        raise ValueError(f"{name} has non-finite entries (NaN/Inf)")
+    return arr
+
+
 class AbstractOQSModel(ABC):
     """Base class for open-quantum-system models.
 
@@ -132,23 +164,76 @@ class AbstractOQSModel(ABC):
     # -- validation --------------------------------------------------------
 
     def validate(self) -> None:
-        """Sanity-check the operators and initial state; raise on inconsistency."""
-        d = self.system_dim
+        """Sanity-check the model's dimension, operators and initial state; raise on any
+        inconsistency (always ``ValueError`` for a malformed model, never a leaked
+        ``AttributeError``/``TypeError``/``LinAlgError``).
+
+        Checks, in order: ``system_dim`` is a positive integer; the Hamiltonian is a finite
+        Hermitian ``(d, d)`` numeric array; the initial state is a finite ``(d, d)`` numeric
+        array with unit trace (imag part within tolerance), Hermitian and positive
+        semidefinite (min eigenvalue ``>= -tol``); there is at least one coupling operator and
+        each is a finite ``(d, d)`` numeric array.  Coupling operators are NOT required to be
+        Hermitian (future channels may use a non-Hermitian basis).  The solver calls this
+        automatically in :class:`~edmtn.driver.solver.EDMSolver` before building any pipeline.
+        """
+        # 1. system dimension: a genuine positive integer (bool / float / <=0 rejected)
+        d_raw = self.system_dim
+        if isinstance(d_raw, bool) or not isinstance(d_raw, numbers.Integral) or int(d_raw) < 1:
+            raise ValueError(f"system_dim must be a positive integer, got {d_raw!r}")
+        d = int(d_raw)
+
+        # 2. read every model method exactly once (a stateful/dynamic model must not be asked
+        #    twice within one validation and possibly answer differently)
         H = self.system_hamiltonian()
-        if H.shape != (d, d):
-            raise ValueError(f"system_hamiltonian shape {H.shape} != ({d}, {d})")
-        if not np.allclose(H, H.conj().T):
-            raise ValueError("system_hamiltonian is not Hermitian")
         rho = self.initial_system_state()
-        if rho.shape != (d, d):
-            raise ValueError(f"initial_system_state shape {rho.shape} != ({d}, {d})")
-        if not np.allclose(rho, rho.conj().T):
+        try:
+            coupling_ops = list(self.coupling_operators())
+        except TypeError as exc:
+            raise ValueError(
+                f"coupling_operators() must return an iterable of operators: {exc}") from exc
+
+        # 3. Hamiltonian: numeric, (d, d), finite, Hermitian
+        H = _as_finite_operator("system_hamiltonian", H, d)
+        if not np.allclose(H, H.conj().T, rtol=_VALIDATE_TOL, atol=_VALIDATE_TOL):
+            raise ValueError("system_hamiltonian is not Hermitian")
+
+        # 4. initial state: numeric, (d, d), finite
+        rho = _as_finite_operator("initial_system_state", rho, d)
+
+        # 5. trace normalisation (absolute tol for a fixed unit trace; imag part near zero)
+        tr = complex(np.trace(rho))
+        if abs(tr.imag) > _VALIDATE_TOL:
+            raise ValueError(
+                f"initial_system_state trace has nonzero imaginary part {tr.imag:.3g} "
+                f"(tol {_VALIDATE_TOL:g})")
+        if not np.isclose(tr.real, 1.0, rtol=0.0, atol=_VALIDATE_TOL):
+            raise ValueError(
+                f"initial_system_state trace {tr.real:.6g} != 1 (tol {_VALIDATE_TOL:g})")
+
+        # 6. initial state Hermitian
+        if not np.allclose(rho, rho.conj().T, rtol=_VALIDATE_TOL, atol=_VALIDATE_TOL):
             raise ValueError("initial_system_state is not Hermitian")
-        if not np.isclose(np.trace(rho), 1.0):
-            raise ValueError(f"initial_system_state trace {np.trace(rho):.3g} != 1")
-        for i, S in enumerate(self.coupling_operators()):
-            if S.shape != (d, d):
-                raise ValueError(f"coupling operator {i} shape {S.shape} != ({d}, {d})")
+
+        # 7. initial state positive semidefinite (eigvalsh on an explicitly Hermitised copy so a
+        #    tiny non-Hermitian residue can't make it read only one triangle)
+        rho_h = 0.5 * (rho + rho.conj().T)
+        try:
+            eig_min = float(np.linalg.eigvalsh(rho_h).min())
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                f"initial_system_state eigenvalue computation failed: {exc}") from exc
+        if eig_min < -_VALIDATE_TOL:
+            raise ValueError(
+                f"initial_system_state is not positive semidefinite: minimum eigenvalue "
+                f"{eig_min:.3g} < -{_VALIDATE_TOL:g}")
+
+        # 8. at least one coupling operator
+        if len(coupling_ops) == 0:
+            raise ValueError("coupling_operators() is empty; the model has no coupling channels")
+
+        # 9. each coupling operator: numeric, (d, d), finite (Hermiticity NOT required)
+        for i, S in enumerate(coupling_ops):
+            _as_finite_operator(f"coupling operator {i}", S, d)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(d={self.system_dim}, bath_type={self.bath_type!r})"

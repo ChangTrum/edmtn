@@ -53,6 +53,16 @@ class GaussianCumulants:
     n_steps: int
     f: np.ndarray
 
+    def __post_init__(self):
+        # own a private read-only copy so these recorded cumulants can never be mutated out
+        # from under the container via a shared array (frozen dataclass -> object.__setattr__)
+        try:
+            f = np.array(self.f, dtype=np.complex128, copy=True)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("f must be a complex numeric array") from exc
+        f.setflags(write=False)
+        object.__setattr__(self, "f", f)
+
     @property
     def re(self) -> np.ndarray:
         """``Re f`` at each integer step lag (the ``C[2, 2]`` cumulant)."""

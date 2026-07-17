@@ -49,6 +49,8 @@ in the separable kernel engine (Layer 3).
 
 from __future__ import annotations
 
+import math
+import numbers
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -207,11 +209,13 @@ class SeparableBathCorrelation(CumulantEngine):
 
     @staticmethod
     def _require_infinite_temperature(model) -> None:
+        # only real POSITIVE infinity is the maximally-mixed bath this engine assumes;
+        # -inf / finite / nan / bool must all fail loudly (np.isinf accepted -inf)
         temp = model.bath_params().temperature
-        if not np.isinf(temp):
+        if isinstance(temp, bool) or not isinstance(temp, numbers.Real) or temp != math.inf:
             raise NotImplementedError(
                 "SeparableBathCorrelation currently supports infinite-temperature "
-                f"(maximally mixed) sub-baths only (got temperature={temp})"
+                f"(maximally mixed, +inf) sub-baths only (got temperature={temp!r})"
             )
 
     @staticmethod

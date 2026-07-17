@@ -188,3 +188,22 @@ def test_compute_final_guard_catches_nonfinite_correlation():
     m = SpinBosonModel(J0=0.5, omega_c=5.0, mu=1.0)
     with pytest.raises(FloatingPointError):
         _NanEngine().compute(m, T=0.2, eps=0.1)
+
+
+# -- read-only array isolation (P1-12) --------------------------------------------------
+
+def test_gaussian_cumulants_copies_and_freezes_f():
+    src = np.array([1.0 + 0j, 2.0 + 0j, 3.0 + 0j])
+    cum = GaussianCumulants(eps=0.1, n_steps=2, f=src)
+    src[0] = 99.0                          # mutating the source array must NOT change the container
+    assert cum.f[0] == 1.0 + 0j
+    assert not cum.f.flags.writeable
+    with pytest.raises(ValueError):        # the stored array is read-only
+        cum.f[0] = 5.0
+
+
+def test_gaussian_cumulants_compute_f_is_readonly_and_re_view_cannot_write_back(model, engine):
+    cum = engine.compute(model, T=0.5, eps=0.1)
+    assert not cum.f.flags.writeable       # compute()'s f is read-only
+    with pytest.raises(ValueError):
+        cum.re[0] = 0.0                    # the .real view inherits read-only -> can't write back to f

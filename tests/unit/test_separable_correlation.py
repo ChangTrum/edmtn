@@ -162,3 +162,19 @@ def test_rejects_finite_temperature(engine):
 
     with pytest.raises(NotImplementedError):
         engine.compute(_FiniteTempGaudin(g=1.0, K=4), T=1.0, eps=0.1)
+
+
+# -- read-only array isolation (P0-3 guarantee, re-checked in P1-12) --------------------
+
+def test_separable_correlation_copies_and_freezes_inputs():
+    couplings = np.array([0.5, 0.7], dtype=np.float64)
+    transfer = np.zeros((2, 7, 4, 4), dtype=np.complex128)
+    corr = SeparableCorrelation(eps=0.1, n_steps=3, couplings=couplings, transfer=transfer)
+    couplings[0] = 99.0                    # mutating the sources must NOT change the container
+    transfer[0, 0, 0, 0] = 99.0
+    assert corr.couplings[0] == 0.5
+    assert corr.transfer[0, 0, 0, 0] == 0.0
+    assert not corr.couplings.flags.writeable
+    assert not corr.transfer.flags.writeable
+    with pytest.raises(ValueError):        # transfer_for() returns a view of the read-only array
+        corr.transfer_for(0)[0, 0, 0] = 1.0

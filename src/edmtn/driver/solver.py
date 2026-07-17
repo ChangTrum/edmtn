@@ -152,6 +152,10 @@ class EDMSolver:
 
     def __init__(self, model, config: SolverConfig):
         self.model = model
+        # reject a malformed model up front -- BEFORE resolving the config or building any
+        # pipeline/kernel -- so a bad Hamiltonian / initial state / coupling set fails loudly at
+        # construction (both tracks) instead of surfacing deep in the cumulant/kernel build
+        self.model.validate()
         # resolve the effective order ONCE (config default None -> model.time_step_order),
         # store the resolved config so every layer reads the same order; original untouched
         self.config = resolve_config_for_model(model, config)
