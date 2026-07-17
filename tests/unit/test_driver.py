@@ -117,6 +117,10 @@ def test_max_bond_cap(model):
 
 def test_timestep_convergence(model):
     solver = EDMSolver.from_model(model, T=0.8, eps=0.05, cutoff=1e-6)
-    dev, ok = solver.timestep_convergence(tol=5e-2)
-    assert dev < 5e-2
-    assert ok is True
+    res = solver.timestep_convergence(tol=5e-2)
+    assert res.deviation < 5e-2
+    assert res.converged is True
+    # legacy 2-tuple unpack stays supported
+    dev, ok = res
+    assert dev == res.deviation and ok is res.converged
+    assert res[0] == res.deviation and res[1] is res.converged and len(res) == 2

@@ -202,3 +202,97 @@ def test_outer_loop_frees_memory_each_sub_bath():
 
     SeparableBathEvolution().run(model, eng, 0.1, 3, cutoff=1e-8, memory=_SpyMemory())
     assert calls["n"] == model.K  # once per folded sub-bath
+
+
+# --------------------------------------------------------------------------
+# P0-7: timestep_convergence must NOT drop config fields into the fine run
+# --------------------------------------------------------------------------
+
+def test_timestep_convergence_inherits_all_config_fields(monkeypatch):
+    """The fine run inherits EVERY init config field except eps (regression: the old
+    hand-copied config silently dropped sub_baths/backend/precision/preset/...)."""
+    import dataclasses
+    import edmtn.driver.solver as solver_mod
+    from edmtn.driver import SolverResult
+
+    model = GaudinModel(g=1.0, K=3)
+    solver = EDMSolver.from_model(
+        model, T=0.4, eps=0.1, expansion_order=2, cutoff=1e-7, max_bond=64,
+        cutoff_mode="rsum2", compress_method="direct", compress_canon="householder",
+        sub_baths=1, record_rho=True, preset="balanced",
+        # backend/precision/pathfinder also default-back-to-cpu/f64/cuquantum under the OLD
+        # bug, so they must be non-default here to actually catch a regression of those fields
+        backend="numpy", precision="mixed", pathfinder="cotengra",
+    )
+    base = solver.config
+    captured = {}
+    real_init = solver_mod.EDMSolver.__init__
+
+    def spy_init(self, m, cfg):
+        captured["fine"] = cfg                 # the inner EDMSolver(model, fine_cfg)
+        real_init(self, m, cfg)
+
+    def stub_solve(self, observables=None, *, channel=1):
+        # capture-only: skip the actual (random rSVD / costly) coarse+fine solves; give the
+        # coarse (outer) and fine (inner) runs DISTINCT labels so metadata can't just copy one
+        label = "coarse-stub" if self is solver else "fine-stub"
+        return SolverResult(times=np.array([0.1, 0.2]), polarization=np.array([0.5, 0.4]),
+                            bond_dims=[1], truncation_errors=[0.0],
+                            expansion_order=self.config.expansion_order, backend=label)
+
+    monkeypatch.setattr(solver_mod.EDMSolver, "solve", stub_solve)
+    monkeypatch.setattr(solver_mod.EDMSolver, "__init__", spy_init)
+    res = solver.timestep_convergence(channel=3)
+
+    fine = captured["fine"]
+    for f in dataclasses.fields(SolverConfig):   # field-driven: new knobs auto-covered
+        if not f.init:
+            continue
+        if f.name == "eps":
+            assert fine.eps == base.eps / 2
+        else:
+            assert getattr(fine, f.name) == getattr(base, f.name), f.name
+    assert fine.n_steps == 2 * base.n_steps
+    # metadata's backend labels come from the respective (coarse vs fine) SolverResult
+    assert res.metadata["coarse_backend"] == "coarse-stub"
+    assert res.metadata["fine_backend"] == "fine-stub"
+
+
+def test_timestep_convergence_respects_sub_baths():
+    """The helper deviation matches the correct sub_baths=1 comparison and clearly differs
+    from the old sub_baths=None (full-bath) bug -- not just 'nonzero'."""
+    from dataclasses import replace
+    from edmtn.observables.convergence import max_history_deviation
+
+    model = GaudinModel(g=1.0, K=3)
+    solver = EDMSolver.from_model(model, T=0.4, eps=0.1, expansion_order=2,
+                                  cutoff=0.0, sub_baths=1)
+    base = solver.config
+    helper_dev = solver.timestep_convergence(channel=3).deviation
+
+    coarse = solver.solve(channel=3)
+    fine_correct = EDMSolver(model, replace(base, eps=base.eps / 2)).solve(channel=3)
+    correct_dev = max_history_deviation(coarse.times, coarse.polarization,
+                                        fine_correct.times, fine_correct.polarization)
+    fine_wrong = EDMSolver(model, replace(base, eps=base.eps / 2,
+                                          sub_baths=None)).solve(channel=3)  # old bug
+    wrong_dev = max_history_deviation(coarse.times, coarse.polarization,
+                                      fine_wrong.times, fine_wrong.polarization)
+
+    assert helper_dev == pytest.approx(correct_dev)
+    assert abs(helper_dev - wrong_dev) > 1e-4    # correct vs old-bug differ clearly (~1e-3)
+
+
+def test_timestep_convergence_metadata():
+    model = GaudinModel(g=1.0, K=2)
+    solver = EDMSolver.from_model(model, T=0.2, eps=0.1, expansion_order=2,
+                                  cutoff=0.0, sub_baths=1)
+    res = solver.timestep_convergence(tol=1e-3, channel=np.int64(3))   # NumPy int in
+    m = res.metadata
+    assert m["coarse_config"] is solver.config              # full SolverConfig, not copied fields
+    assert m["fine_config"].eps == solver.config.eps / 2
+    assert m["fine_config"].n_steps == 2 * solver.config.n_steps
+    assert m["fine_config"].sub_baths == 1                  # inherited, not reverted
+    assert m["channel"] == 3 and type(m["channel"]) is int  # normalised to a Python int
+    assert m["tolerance"] == 1e-3
+    assert m["coarse_backend"] and m["fine_backend"]        # actual executed backend labels

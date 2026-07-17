@@ -10,7 +10,7 @@ set.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -61,6 +61,41 @@ class SolverResult:
     @property
     def max_bond(self) -> int:
         return max(self.bond_dims) if self.bond_dims else 1
+
+
+@dataclass(frozen=True)
+class TimestepConvergence:
+    """Result of :meth:`EDMSolver.timestep_convergence`.
+
+    Attributes
+    ----------
+    deviation : float
+        Max ``|Δ<S_a(t)>|`` between the ``eps`` and ``eps/2`` runs on the common time grid.
+    converged : bool or None
+        ``deviation <= tol`` (or ``None`` when no ``tol`` was given).
+    metadata : dict
+        Self-describing record of the comparison: the FULL ``coarse_config`` / ``fine_config``
+        (:class:`SolverConfig`, so no field can be silently dropped as new knobs are added),
+        the normalised ``channel``, the ``tolerance``, and the ACTUAL executed
+        ``coarse_backend`` / ``fine_backend`` labels (which reveal e.g. a GPU→CPU fallback).
+
+    Backward compatible with the legacy 2-tuple contract: ``dev, ok = result``,
+    ``result[0]`` / ``result[1]`` and ``len(result) == 2`` all still work.
+    """
+
+    deviation: float
+    converged: bool | None
+    metadata: dict
+
+    def __iter__(self):
+        yield self.deviation
+        yield self.converged
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index):
+        return (self.deviation, self.converged)[index]
 
 
 class EDMSolver:
@@ -289,31 +324,39 @@ class EDMSolver:
 
     # -- convergence helpers ----------------------------------------------
 
-    def timestep_convergence(self, *, tol: float | None = None, channel: int = 1):
-        """Compare the polarization at ``eps`` and ``eps/2``.
+    def timestep_convergence(self, *, tol: float | None = None,
+                             channel: int = 1) -> TimestepConvergence:
+        """Compare the coupling polarization at ``eps`` and ``eps/2``.
 
-        Returns ``(deviation, converged_or_None)``: the maximum deviation on the
-        common time grid and, if ``tol`` is given, whether it is within ``tol``.
+        The fine run is built with ``dataclasses.replace(self.config, eps=eps/2)``, so it
+        inherits EVERY resolved config field except ``eps`` (``sub_baths``, ``backend``,
+        ``precision``, ``preset``, ``record_rho``, ``pathfinder``, cutoff/bond/compression,
+        and any future knob).  Coarse and fine are therefore the SAME physical model, differing
+        only in the time step (``n_steps`` doubles) -- fixing the old hand-copied config that
+        dropped fields and silently compared a different model (e.g. ``sub_baths=1`` reverting
+        to the full bath, or a requested GPU/HPC fine run being silently replaced by the
+        default CPU backend).
+
+        Returns a :class:`TimestepConvergence` (``.deviation`` / ``.converged`` / ``.metadata``);
+        it still unpacks as the legacy ``dev, ok = ...`` 2-tuple.
         """
+        channel = validate_channel(channel, len(self.model.coupling_operators()))
         coarse = self.solve(channel=channel)
-        fine_cfg = SolverConfig(
-            eps=self.config.eps / 2,
-            T=self.config.T,
-            cutoff=self.config.cutoff,
-            cutoff_mode=self.config.cutoff_mode,
-            max_bond=self.config.max_bond,
-            expansion_order=self.config.expansion_order,
-            compress_method=self.config.compress_method,
-            compress_decomp=self.config.compress_decomp,
-            compress_decomp_q=self.config.compress_decomp_q,
-            compress_canon=self.config.compress_canon,
-        )
+        fine_cfg = replace(self.config, eps=self.config.eps / 2)
         fine = EDMSolver(self.model, fine_cfg).solve(channel=channel)
         dev = max_history_deviation(
             coarse.times, coarse.polarization, fine.times, fine.polarization
         )
         ok = None if tol is None else (dev <= tol)
-        return dev, ok
+        metadata = {
+            "coarse_config": self.config,        # full SolverConfig -> no field can be dropped
+            "fine_config": fine_cfg,
+            "channel": channel,                  # normalised Python int
+            "tolerance": tol,
+            "coarse_backend": coarse.backend,    # ACTUAL executed labels (reveal GPU->CPU fallback)
+            "fine_backend": fine.backend,
+        }
+        return TimestepConvergence(dev, ok, metadata)
 
 
 def solve(

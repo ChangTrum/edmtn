@@ -14,12 +14,13 @@ from .auto_config import (
     resolve_config_for_model,
     resolve_expansion_order,
 )
-from .solver import EDMSolver, SolverResult, solve
+from .solver import EDMSolver, SolverResult, TimestepConvergence, solve
 
 __all__ = [
     "EDMSolver",
     "SolverConfig",
     "SolverResult",
+    "TimestepConvergence",
     "solve",
     "build_pipeline",
     "register_pipeline",
