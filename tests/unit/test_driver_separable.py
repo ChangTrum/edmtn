@@ -86,7 +86,7 @@ def test_sz_trajectory_matches_exact(K, order):
     model = GaudinModel(g=0.7, K=K)
     eps, n_steps = 0.1, 4
     # exact (uncompressed) vs Trotter is a math check -> CPU for clean fp64;
-    # the GPU path is validated separately by test_gpu_matches_cpu_gaudin.
+    # the GPU path is validated separately in tests/unit/test_gpu_hpc.py.
     res = EDMSolver.from_model(
         model, T=eps * n_steps, eps=eps, expansion_order=order, cutoff=0.0, backend="cpu"
     ).solve(channel=3)  # channel 3 = S_z
@@ -142,18 +142,6 @@ def test_channel_out_of_range():
 # backend selection (GPU is the primary path for the separable / Gaudin pipeline)
 # --------------------------------------------------------------------------
 
-def _gpu_available() -> bool:
-    try:
-        import cupy as cp
-
-        return cp.cuda.runtime.getDeviceCount() > 0
-    except Exception:
-        return False
-
-
-requires_gpu = pytest.mark.skipif(not _gpu_available(), reason="no CuPy GPU available")
-
-
 def test_explicit_cpu_backend_label():
     model = GaudinModel(g=1.0, K=4)
     res = EDMSolver.from_model(
@@ -172,19 +160,8 @@ def test_auto_defaults_to_cpu():
     assert "cupy" not in type(res.mps.tensors[0]).__module__
 
 
-# GPU end-to-end consistency: the GPU gives the same physics as the CPU, but the
-# GPU is not the Phase-1/2 compute path (CPU is faster at these bond dimensions,
-# see docs/cpu-vs-gpu-edm.md), so this slow check is deferred to Phase 3/4.
-@pytest.mark.skip(reason="GPU end-to-end deferred to Phase 3/4 (docs/cpu-vs-gpu-edm.md)")
-@requires_gpu
-def test_gpu_matches_cpu_gaudin():
-    model = GaudinModel(g=0.8, K=4)
-    kw = dict(T=0.6, eps=0.1, expansion_order=2, cutoff=1e-6, max_bond=64)
-    cpu = EDMSolver.from_model(model, backend="cpu", **kw).solve(channel=3)
-    gpu = EDMSolver.from_model(model, backend="gpu", **kw).solve(channel=3)
-    assert gpu.backend.startswith("gpu") and cpu.backend.startswith("cpu")
-    np.testing.assert_allclose(gpu.times, cpu.times, atol=1e-12)
-    np.testing.assert_allclose(gpu.polarization, cpu.polarization, atol=1e-8)
+# The Gaudin GPU/CPU end-to-end parity now lives (un-skipped, gated by a real GPU marker,
+# alongside the spin-boson parity) in tests/unit/test_gpu_hpc.py, so it is not duplicated here.
 
 
 def test_outer_loop_frees_memory_each_sub_bath():

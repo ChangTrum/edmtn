@@ -12,16 +12,8 @@ import edmtn.backend as bk
 from edmtn.backend.ozaki_gemm import OzakiGEMMBackend
 
 
-def _gpu_available() -> bool:
-    try:
-        import cupy as cp
-
-        return cp.cuda.runtime.getDeviceCount() > 0
-    except Exception:
-        return False
-
-
-requires_gpu = pytest.mark.skipif(not _gpu_available(), reason="no CuPy GPU available")
+# The one hardware-dependent test carries @pytest.mark.gpu; tests/conftest.py skips it (with a
+# specific reason) when no GPU is present.
 
 
 def test_exported_from_backend_package():
@@ -65,7 +57,7 @@ def test_accelerated_gemm_not_implemented():
         o._accelerated_gemm(np.eye(2), np.eye(2))
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_detect_hardware_true_on_blackwell():
     # RTX 5090 is compute capability 12.0; with CUDA >= 13.0 detection is True.
     import cupy as cp

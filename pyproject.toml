@@ -35,4 +35,7 @@ pythonpath = ["src"]
 addopts = "-ra -m 'not integration'"
 markers = [
     "integration: end-to-end smoke checks (slower than unit tests)",
+    "gpu: requires a real CUDA-capable GPU and CuPy",
+    "cuquantum: requires cuQuantum/cuTensorNet on a real NVIDIA GPU",
+    "multigpu(n): requires an explicitly enabled multi-GPU MPI/SLURM allocation",
 ]

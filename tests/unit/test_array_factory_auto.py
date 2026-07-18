@@ -12,16 +12,9 @@ from edmtn.backend.array_factory import resolve_backend
 from edmtn.backend.precision import PrecisionPolicy
 
 
-def _gpu_available() -> bool:
-    try:
-        import cupy as cp
-
-        return cp.cuda.runtime.getDeviceCount() > 0
-    except Exception:
-        return False
-
-
-GPU = _gpu_available()
+# These tests are ADAPTIVE: they run on any machine and branch on the ``gpu_available`` fixture
+# (from tests/conftest.py), asserting the CPU-fallback path when no GPU is present and the GPU
+# path when one is.  They are NOT gpu-only, so they carry no @pytest.mark.gpu.
 
 
 # --------------------------------------------------------------------------
@@ -37,9 +30,9 @@ def test_resolve_invalid_prefer():
         resolve_backend("jax")
 
 
-def test_resolve_cupy_matches_availability():
+def test_resolve_cupy_matches_availability(gpu_available):
     name, reason = resolve_backend("cupy")
-    if GPU:
+    if gpu_available:
         assert name == "cupy" and reason is None
     else:
         assert name == "numpy" and isinstance(reason, str) and reason
@@ -55,9 +48,9 @@ def test_auto_prefer_numpy():
     assert f.fallback_reason is None
 
 
-def test_auto_prefer_cupy_consistent_state():
+def test_auto_prefer_cupy_consistent_state(gpu_available):
     f = bk.ArrayFactory.auto(prefer="cupy")
-    if GPU:
+    if gpu_available:
         assert f.is_gpu and f.fallback_reason is None
     else:
         # graceful fallback, never raises

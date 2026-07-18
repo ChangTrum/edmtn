@@ -11,16 +11,8 @@ import edmtn.backend as bk
 from edmtn.backend.memory import MemoryManager
 
 
-def _gpu_available() -> bool:
-    try:
-        import cupy as cp
-
-        return cp.cuda.runtime.getDeviceCount() > 0
-    except Exception:
-        return False
-
-
-requires_gpu = pytest.mark.skipif(not _gpu_available(), reason="no CuPy GPU available")
+# CuPy tests carry @pytest.mark.gpu; tests/conftest.py skips them (with a specific reason) when
+# no GPU is present.
 
 
 # --------------------------------------------------------------------------
@@ -81,7 +73,7 @@ def test_factory_carries_memory_manager():
 # CuPy path
 # --------------------------------------------------------------------------
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_stats_keys_and_types():
     m = MemoryManager("cupy")
     s = m.stats()
@@ -89,7 +81,7 @@ def test_cupy_stats_keys_and_types():
     assert all(isinstance(v, int) for v in s.values())
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_scope_frees_blocks():
     import cupy as cp
 
@@ -102,7 +94,7 @@ def test_cupy_scope_frees_blocks():
     assert pool.n_free_blocks() == 0
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_set_limit_roundtrip():
     import cupy as cp
 
@@ -116,7 +108,7 @@ def test_cupy_set_limit_roundtrip():
         pool.set_limit(size=original)
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_oom_guard_catches_and_reraises():
     import cupy as cp
 

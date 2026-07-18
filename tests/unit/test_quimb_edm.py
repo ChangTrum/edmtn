@@ -80,7 +80,7 @@ def test_container_solver_physics_converges(mode, cutoff):
     assert err < 1e-4
 
 
-@pytest.mark.skipif(True, reason="no CuPy GPU available")
+@pytest.mark.gpu
 def test_container_reduced_dm_stays_on_gpu():  # pragma: no cover - GPU node only
     """reduced_density_matrix must keep CuPy-backed results on device (regression:
     np.asarray forced an implicit CuPy->NumPy conversion and crashed the GPU path)."""

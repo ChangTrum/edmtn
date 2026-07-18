@@ -21,20 +21,8 @@ from edmtn.kernels import GaussianKernelEngine
 from edmtn.models import SpinBosonModel
 
 
-# --------------------------------------------------------------------------
-# GPU availability
-# --------------------------------------------------------------------------
-
-def _gpu_available() -> bool:
-    try:
-        import cupy as cp
-
-        return cp.cuda.runtime.getDeviceCount() > 0
-    except Exception:
-        return False
-
-
-requires_gpu = pytest.mark.skipif(not _gpu_available(), reason="no CuPy GPU available")
+# GPU tests carry @pytest.mark.gpu; tests/conftest.py skips them (with a specific reason) when
+# no CUDA GPU/CuPy is present, and a GPU runner passing --require-gpu turns that into a failure.
 
 
 # --------------------------------------------------------------------------
@@ -99,7 +87,7 @@ def test_array_factory_numpy_to_gpu_rejected():
 # ArrayFactory - CuPy
 # --------------------------------------------------------------------------
 
-@requires_gpu
+@pytest.mark.gpu
 def test_array_factory_cupy_roundtrip():
     f = bk.ArrayFactory("cupy")
     assert f.is_gpu
@@ -112,7 +100,7 @@ def test_array_factory_cupy_roundtrip():
     np.testing.assert_allclose(back, host)
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_array_factory_cupy_creation_helpers():
     f = bk.ArrayFactory("cupy")
     assert f.zeros((3, 3)).shape == (3, 3)
@@ -124,7 +112,7 @@ def test_array_factory_cupy_creation_helpers():
 # CuPySVDBackend
 # --------------------------------------------------------------------------
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_svd_reconstruction():
     import cupy as cp
 
@@ -144,7 +132,7 @@ def test_cupy_svd_reconstruction():
     assert np.all(np.diff(s_host) <= 1e-9)
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_qr_reconstruction():
     import cupy as cp
 
@@ -160,7 +148,7 @@ def test_cupy_qr_reconstruction():
     assert float(cp.linalg.norm(ident - cp.eye(18))) < 1e-9
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_cupy_eigh_hermitian():
     import cupy as cp
 
@@ -186,7 +174,7 @@ def test_quimb_svd_numpy():
     assert np.linalg.norm(recon - a) / np.linalg.norm(a) < 1e-10
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_quimb_svd_cupy():
     import cupy as cp
 
@@ -202,7 +190,7 @@ def test_quimb_svd_cupy():
 # autoray / CuPy compat shim: quimb tensor ops must work on the GPU
 # --------------------------------------------------------------------------
 
-@requires_gpu
+@pytest.mark.gpu
 def test_compat_shim_quimb_split_on_cupy():
     import cupy as cp
     import quimb.tensor as qtn
@@ -215,7 +203,7 @@ def test_compat_shim_quimb_split_on_cupy():
     assert left.shape[0] == 4
 
 
-@requires_gpu
+@pytest.mark.gpu
 def test_compat_shim_quimb_contract_on_cupy():
     import cupy as cp
     import quimb.tensor as qtn
@@ -262,7 +250,7 @@ def test_cpu_fp32_matches_fp64():
 
 
 @pytest.mark.skip(reason=_PHASE34)
-@requires_gpu
+@pytest.mark.gpu
 def test_gpu_matches_cpu():
     import cupy as cp
 
