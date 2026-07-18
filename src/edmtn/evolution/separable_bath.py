@@ -123,6 +123,10 @@ class SeparableBathEvolution:
     ) -> SeparableEvolutionResult:
         """Fold the ``K`` sub-baths into the EDM one at a time.
 
+        All arguments are validated at the entry point (before any tensor is built or the
+        kernel is read), so a direct call bypassing the driver still fails loudly with a
+        clear ``ValueError`` -- see :mod:`edmtn.evolution._validation`.
+
         Parameters
         ----------
         model : AbstractOQSModel
@@ -160,10 +164,6 @@ class SeparableBathEvolution:
         memory : MemoryManager, optional
             GPU memory manager; its pool blocks are freed after each sub-bath so
             the O(K) outer loop does not accumulate VRAM (Sec. 8.4).  No-op on CPU.
-
-        All arguments are validated at the entry point (before any tensor is built or the
-        kernel is read), so a direct call bypassing the driver still fails loudly with a
-        clear ``ValueError`` -- see :mod:`edmtn.evolution._validation`.
         """
         from ..models.base import validate_sub_baths  # noqa: PLC0415
 

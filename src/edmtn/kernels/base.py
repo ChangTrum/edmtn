@@ -30,10 +30,10 @@ import numpy as np
 
 
 def picking_tensor(d_phys: int) -> np.ndarray:
-    """Return the picking tensor ``P[phi_up, phi_mid, phi_down]``.
+    """Return the picking tensor ``P[phi_up, phi_mid, phi_down]``::
 
-    ``P = delta^{up}_{down} delta^{mid}_0 + delta^{mid}_{down} delta^{up}_0
-          - delta^0_{down} delta^{up}_0 delta^{mid}_0``.
+        P = delta^{up}_{down} delta^{mid}_0 + delta^{mid}_{down} delta^{up}_0
+            - delta^0_{down} delta^{up}_0 delta^{mid}_0
 
     It routes a noise either to its open arm (``phi_up = phi_down``, ``phi_mid =
     0``) or into a cumulant (``phi_up = 0``, ``phi_mid = phi_down``); the null

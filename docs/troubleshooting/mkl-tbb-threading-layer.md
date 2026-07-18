@@ -5,6 +5,8 @@ metadata:
   type: project
 ---
 
+# MKL/TBB threading layer: numpy hard-crash in the quimb env
+
 In the `quimb` conda env (`D:\Productivity\Anaconda3\envs\quimb`), any numpy BLAS/LAPACK call (`np.matmul`, `np.linalg.svd`, even real-valued/small) **hard-crashes the process** with Windows fatal exception `0xc06d007f` (exit 127). It is not a Python exception, so `try/except` cannot catch it — it kills the whole interpreter (and a pytest run).
 
 **Cause:** the env has MKL-backed BLAS (`libblas/libcblas/liblapack` = `*_mkl`, `mkl-2026.0.0`) but ships **both** OpenMP runtimes — Intel `libiomp5md.dll` and GNU `libgomp-1.dll`. MKL's default OpenMP threading layer aborts on the OpenMP clash. `KMP_DUPLICATE_LIB_OK=TRUE` does NOT fix it.

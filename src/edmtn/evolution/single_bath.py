@@ -114,6 +114,10 @@ class SingleBathEvolution:
     ) -> EvolutionResult:
         """Evolve the EDM for ``n_steps`` steps.
 
+        All arguments are validated at the entry point (before any tensor is built or the
+        kernel is read), so a direct call bypassing the driver still fails loudly with a
+        clear ``ValueError`` -- see :mod:`edmtn.evolution._validation`.
+
         Parameters
         ----------
         model : AbstractOQSModel
@@ -145,10 +149,6 @@ class SingleBathEvolution:
             system superoperators).  Use it to move the computation onto another
             backend or precision, e.g. ``lambda a: cupy.asarray(a, cupy.complex64)``
             for single-precision GPU.  Defaults to identity (CPU, complex128).
-
-        All arguments are validated at the entry point (before any tensor is built or the
-        kernel is read), so a direct call bypassing the driver still fails loudly with a
-        clear ``ValueError`` -- see :mod:`edmtn.evolution._validation`.
         """
         # -- entry validation (before convert / initial_system_state / kernel read / QuimbEDM) --
         eps = validate_positive_finite_float("eps", eps)

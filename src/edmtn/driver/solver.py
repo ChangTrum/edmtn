@@ -91,7 +91,7 @@ class SolverResult:
         Raw Layer-5 output (internal; the top-level fields above are the public contract).
         ``None`` on Track 2, which has no Layer-5 evolution object.
     error_metrics : dict or None
-        Track 2 only: reference error metrics (‖ρ−ρ†‖ / |Tr ρ−1| + optimizer stats).
+        Track 2 only: reference error metrics (``‖ρ−ρ†‖`` / ``|Tr ρ−1|`` + optimizer stats).
     """
 
     times: object

@@ -5,6 +5,8 @@ metadata:
   type: project
 ---
 
+# quimb + CuPy namespace-cache bug (GPU split/contract)
+
 In the `quimb` conda env (`D:\Productivity\Anaconda3\envs\quimb`, Python 3.14, quimb 1.14.0, autoray 0.8.10, cupy 14.1.0, CUDA 13.2, RTX 5090 sm_120), quimb tensor ops on CuPy-backed tensors crash with `TypeError: cannot use 'tuple' as a dict key (unhashable type: 'cupy.cuda.device.Device')`.
 
 **Root cause:** autoray's `get_namespace(like)` reads `like.device` (a `cupy.cuda.device.Device`) into the cache key `(cls, device, dtype, submodule)`. In cupy 14.1.0 that Device class is unhashable AND immutable (cannot subclass or set `__hash__`).
