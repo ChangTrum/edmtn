@@ -111,7 +111,11 @@ def test_public_docstrings_dropped_ref_index_and_rel_ref_default(obj):
 #  excluded -- this scan targets exact stale CLAIMS, never a bare token.)
 
 _CURRENT_DOCS = ["README.md", "docs/guides/recommended-config.md",
-                 "docs/benchmarks/cpu-vs-gpu-edm.md", "docs/research/coupling-scaling-law.md"]
+                 "docs/benchmarks/cpu-vs-gpu-edm.md", "docs/research/coupling-scaling-law.md",
+                 # the Sphinx documentation's current-contract pages (historical
+                 # design/research ledgers stay excluded)
+                 "docs/index.md", "docs/guide/index.md", "docs/developer/index.md",
+                 "docs/getting-started/installation.md", "docs/getting-started/quickstart.md"]
 
 _STALE = [
     (r"backend='auto'", "backend 'auto' was removed; the default is 'cpu'"),
@@ -206,6 +210,45 @@ def test_public_examples_do_not_silently_round_the_time_grid():
         if re.search(r"round\(\s*T\s*/\s*eps\s*\)", path.read_text(encoding="utf-8"))
     ]
     assert not offenders, f"examples still round the time grid: {offenders}"
+
+
+# -- the Sphinx documentation pages (docs/) must match the same contracts ------------------
+
+_QUICKSTART = ROOT / "docs/getting-started/quickstart.md"
+_INSTALLATION = ROOT / "docs/getting-started/installation.md"
+
+
+def test_quickstart_python_blocks_execute():
+    """Every ``python`` fence in the quickstart must actually run, in order."""
+    text = _QUICKSTART.read_text(encoding="utf-8")
+    blocks = re.findall(r"```python\n(.*?)```", text, re.S)
+    assert blocks, "quickstart.md has no python fences"
+    namespace: dict = {}
+    for block in blocks:
+        exec(compile(block, str(_QUICKSTART), "exec"), namespace)  # noqa: S102
+
+
+def test_quickstart_states_the_key_contracts():
+    text = _QUICKSTART.read_text(encoding="utf-8")
+    assert "positive integer" in text                  # the time grid is never rounded
+    assert "[eps, 2 eps, ..., T]" in text or "[eps, 2 eps, …, T]" in text
+    assert "strict 1-based" in text                    # the channel contract
+    assert "`S_z` (its single coupling channel)" in text   # spin-boson channel 1 is S_z
+    assert "`S_x`, `S_y`, `S_z`" in text               # Gaudin 1/2/3
+
+
+def test_installation_matches_distribution_and_packaging_contract():
+    text = _INSTALLATION.read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    # packaging metadata: the Python floor and dependency names come from pyproject.toml
+    assert 'requires-python = ">=3.11"' in pyproject   # guard the source of truth itself
+    assert "Python 3.11 or newer" in text
+    for dep in ("NumPy", "SciPy", "quimb", "autoray"):
+        assert dep in text, dep
+    # distribution policy (not packaging metadata): the project is source-only today
+    assert "not published on PyPI" in text
+    assert "cupy-cuda12x" in text                      # GPU extra stays optional + explicit
+    assert "cuquantum-python-cu12" in text             # hpc extra
 
 
 def test_model_docstrings_state_ranges_and_capability_boundaries():

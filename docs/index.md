@@ -13,9 +13,25 @@ a single NVIDIA GPU (CuPy) via quimb/autoray dispatch; a separate exact-only
 cuTensorNet backend (`backend='hpc'`, separable/Gaudin models only) targets
 multi-GPU HPC hardware.
 
-Installation instructions, copy-paste first runs and the full tuning-knob
-reference live in the repository
-[README](https://github.com/ChangTrum/edmtn/blob/main/README.md).
+New here? Start with {doc}`getting-started/installation` and
+{doc}`getting-started/quickstart`. The repository
+[README](https://github.com/ChangTrum/edmtn/blob/main/README.md) is the
+compact single-page counterpart of these pages.
+
+```{toctree}
+:caption: Getting started
+:maxdepth: 1
+
+getting-started/installation
+getting-started/quickstart
+```
+
+```{toctree}
+:caption: User guide
+:maxdepth: 2
+
+guide/index
+```
 
 ```{toctree}
 :caption: API reference
@@ -25,26 +41,10 @@ api/index
 ```
 
 ```{toctree}
-:caption: Guides
-:maxdepth: 1
+:caption: Developer notes
+:maxdepth: 2
 
-guides/recommended-config
-```
-
-```{toctree}
-:caption: Benchmarks
-:maxdepth: 1
-
-benchmarks/cpu-vs-gpu-edm
-benchmarks/gpu-scaling-benchmark
-```
-
-```{toctree}
-:caption: Design notes
-:maxdepth: 1
-
-design/phase0-replatform-decisions
-design/multi-gpu-cuquantum-design
+developer/index
 ```
 
 ```{toctree}
