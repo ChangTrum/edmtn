@@ -153,9 +153,10 @@ class SeparableBathEvolution:
         compress : bool
             If ``False``, genuinely SKIP compression after each fold -- exact, with
             exponentially growing bonds (small-``K`` reference checks).  ``True`` compresses
-            every fold: with ``cutoff=0`` an exact canonicalise + full-SVD recompression,
-            with ``cutoff>0`` a truncating one.  (Previously ``False`` silently ran a
-            zero-cutoff recompression rather than skipping.)
+            every fold: with ``cutoff=0`` and ``max_bond=None`` a no-discard recompression,
+            with ``cutoff>0`` and/or a rank-limiting ``max_bond`` a potentially truncating
+            one.  (Previously ``False`` silently ran a zero-cutoff recompression rather
+            than skipping.)
         convert : callable, optional
             Backend/precision cast applied to every array fed into the MPS
             (initial state, system superoperators, kernel sites).  Defaults to

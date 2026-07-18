@@ -295,8 +295,8 @@ it cannot report a truncation metric (see below).
 | setting | what happens |
 |---|---|
 | `compress=False` | compression is **skipped entirely**; exact, with exponentially growing bonds |
-| `compress=True, cutoff=0` | an **exact recompression**: canonicalise + full SVD, nothing discarded |
-| `compress=True, cutoff>0` (or `max_bond`) | genuinely truncating compression |
+| `compress=True, cutoff=0, max_bond=None` | a **no-discard recompression** with the selected method/decomposition — nothing discarded |
+| `compress=True` with `cutoff>0` and/or a rank-limiting `max_bond` | truncation **may** occur — the metric (`0.0` vs positive) records whether anything was discarded. A rank-limiting `max_bond` truncates even at `cutoff=0` |
 
 ### Truncation metric
 
@@ -420,22 +420,23 @@ so no install is required; alternatively `pip install -e .`.
 ## Paper-scale runs
 
 The examples above are deliberately tiny so they finish instantly. The paper's
-configurations are much larger — same API, very different compute:
+configurations live as ready-to-run reproductions in `examples/reproduce/`:
+
+- `reproduce_fig4.py` — spin-boson (Ohmic, `omega_c = 5 mu`): `T=17` mu⁻¹,
+  `eps=0.01`, `cutoff=1e-5`, order 2;
+- `reproduce_fig6.py` — Gaudin: `K=49`, `T=15` g⁻¹, `eps=0.03`, `cutoff=1e-6`,
+  `max_bond=400`, order 2.
+
+A larger illustrative run — the paper-sized Gaudin `K`/`T` grid with a tighter
+cutoff than the paper's:
 
 ```python
-# Gaudin, paper scale: K=49 bath spins to T=15 (500 steps, bond capped at 400).
-# Minutes-to-hours on CPU depending on cutoff; this is where `backend='gpu'` earns its keep.
 res = solve(GaudinModel(g=1.0, K=49), T=15.0, eps=0.03, expansion_order=2,
             cutoff=1e-8, max_bond=400, channel=3)
-
-# spin-boson, paper scale
-sb = SpinBosonModel(J0=0.5, omega_c=5.0, mu=1.0)
-res = solve(sb, T=8.0, eps=0.02, expansion_order=2, cutoff=1e-8)
 ```
 
 Start small, check `res.truncation_errors` and `timestep_convergence()` before scaling up,
-and remember `T/eps` must be an exact integer. Ready-to-run reproductions live in
-`examples/reproduce/`.
+and remember `T/eps` must be an exact integer.
 
 ## Examples
 

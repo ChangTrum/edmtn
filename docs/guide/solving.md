@@ -35,10 +35,11 @@ the same value.
 ## Truncation controls (Track 1)
 
 - `cutoff` — the truncation threshold; finite, `>= 0`. `cutoff = 0`
-  keeps every singular value: the compression sweep still runs as an
-  exact canonicalise + full-SVD recompression. (Skipping the sweep
-  entirely is a different thing — the Layer-5 engines expose it as
-  `compress=False` on their `run()` methods; see
+  with `max_bond=None` discards nothing: the sweep still runs, as a
+  no-discard recompression with the selected method/decomposition. A
+  rank-limiting `max_bond` can truncate even at `cutoff = 0`. (Skipping
+  the sweep entirely is a different thing — the Layer-5 engines expose
+  it as `compress=False` on their `run()` methods; see
   {doc}`../api/evolution`.)
 - `cutoff_mode` — the quimb-native truncation rule: one of `abs`,
   `rel`, `sum2`, `rsum2`, `sum1`, `rsum1`. Default `'rel'`
@@ -50,7 +51,8 @@ the same value.
   `compress_canon` — the compression-sweep internals (algorithm,
   decomposition, rSVD power iterations, canonicalisation). Defaults:
   `zipup` / `exact` / `2` / `quimb`. All are Track-1 only: `hpc` is
-  exact-only and has no compression sweep.
+  exact-only and has no compression sweep. Not every combination is
+  executable — see the compatibility table in {doc}`compression`.
 - `preset` — `None` (the API default), `'balanced'` or `'robust'`;
   Track 1 only, and an unknown name is rejected on every backend. The
   trigger is `compress_decomp` *alone*: while it is still `'exact'` (its

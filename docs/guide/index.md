@@ -12,5 +12,10 @@ concepts
 models
 solving
 results
+compression
+backends
+convergence
+performance
+cluster
 ../guides/recommended-config
 ```

@@ -138,16 +138,18 @@ class SingleBathEvolution:
             defaults to the quimb-native ``'rel'`` (``s_i / s_max <= cutoff``).  The paper's
             custom ``rel_ref`` rule -- and the reference-index parameter it needed --
             are retired; no such argument exists.
-            ``cutoff = 0`` with ``compress=True`` keeps every singular value (an exact
-            canonicalise + full-SVD recompression), which is NOT the same as
-            ``compress=False`` (no compression at all).
+            ``cutoff = 0`` with ``compress=True`` and ``max_bond=None`` discards nothing
+            (a no-discard recompression with the selected method/decomposition), which is
+            NOT the same as ``compress=False`` (no compression at all); a rank-limiting
+            ``max_bond`` can truncate even at ``cutoff = 0``.
         record_rho : bool
             Store ``rho(t)`` at every step.
         compress : bool
             If ``False``, genuinely SKIP the compression sweep -- exact, with
             exponentially growing bonds (small-``t`` reference checks).  ``True``
-            compresses each step: with ``cutoff=0`` an exact canonicalise + full-SVD
-            recompression, with ``cutoff>0`` (or a ``max_bond``) a truncating one.
+            compresses each step: with ``cutoff=0`` and ``max_bond=None`` a no-discard
+            recompression, with ``cutoff>0`` and/or a rank-limiting ``max_bond`` a
+            potentially truncating one.
         convert : callable, optional
             Applied to every array fed into the MPS (initial state, kernel sites,
             system superoperators).  Use it to move the computation onto another

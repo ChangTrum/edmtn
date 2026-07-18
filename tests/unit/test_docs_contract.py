@@ -117,7 +117,10 @@ _CURRENT_DOCS = ["README.md", "docs/guides/recommended-config.md",
                  "docs/index.md", "docs/guide/index.md", "docs/developer/index.md",
                  "docs/getting-started/installation.md", "docs/getting-started/quickstart.md",
                  "docs/guide/concepts.md", "docs/guide/models.md",
-                 "docs/guide/solving.md", "docs/guide/results.md"]
+                 "docs/guide/solving.md", "docs/guide/results.md",
+                 "docs/guide/compression.md", "docs/guide/backends.md",
+                 "docs/guide/convergence.md", "docs/guide/performance.md",
+                 "docs/guide/cluster.md"]
 
 _STALE = [
     (r"backend='auto'", "backend 'auto' was removed; the default is 'cpu'"),
@@ -317,6 +320,97 @@ def test_preset_docs_state_the_overwrite_rule():
     assert "overwrites `compress_decomp_q`" in README
     guide = (ROOT / "docs/guides/recommended-config.md").read_text(encoding="utf-8")
     assert "explicitly passed `compress_decomp_q`" in guide.replace("\n> ", " ")
+
+
+def test_convergence_python_blocks_execute():
+    """Every ``python`` fence in the convergence guide must actually run."""
+    text = (ROOT / "docs/guide/convergence.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```python\n(.*?)```", text, re.S)
+    assert blocks, "convergence.md has no python fences"
+    namespace: dict = {}
+    for block in blocks:
+        exec(compile(block, "docs/guide/convergence.md", "exec"), namespace)  # noqa: S102
+    assert "keeps **every** other field" in text          # replace()-derived fine run
+    assert "CuTensorNetContractionError" in text          # the EDMTN Track-2 error is documented
+    assert "native runtime exceptions" in text            # ... without claiming it wraps everything
+    assert "non-finite/negative truncation metric" in text  # FloatingPointError sources
+
+
+def test_compression_page_states_the_boundaries():
+    raw = (ROOT / "docs/guide/compression.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())                          # collapse hard line wraps
+    assert "skipped entirely" in text                     # compress=False
+    assert "no-discard recompression" in text             # cutoff=0 AND max_bond=None
+    assert "`compress=True, cutoff=0, max_bond=None`" in text
+    assert "truncates even at `cutoff=0`" in text         # max_bond alone can discard
+    assert "density-matrix **eigendecomposition**" in text  # dm exact is NOT an SVD
+    assert "`dm` | `exact` only | `quimb` only" in text   # the compatibility table
+    assert "On Track 1, unsupported combinations are rejected" in text
+    assert "ignored-field behaviour" in text              # the hpc exception is stated
+    assert "silent resolution guard" in text              # rsvd guard exists ...
+    assert "not a universal guarantee" in text
+    assert "cannot measure what it discarded" in text     # rsvd -> None
+    assert "not an error bound" in text                   # cutoff stays local
+
+
+def test_backends_page_states_the_boundaries():
+    raw = (ROOT / "docs/guide/backends.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())                          # collapse hard line wraps
+    assert "**not** bit-identical" in text
+    assert "falls back to exact full SVD" in text         # rsvd off NumPy
+    assert "non-NumPy" in text
+    assert "experimental and unvalidated" in text
+    assert "does **not** remove the finite-`eps`" in text  # Track-2 'exact' boundary
+    assert "spin-boson is not available" in text          # Track 2 scope
+    assert "`numpy` and `cupy` are accepted aliases" in text   # the full public menu
+    assert "floating-point contraction order" in text     # path/slicing also differ
+
+
+def test_cluster_page_states_status_and_contracts():
+    text = (ROOT / "docs/guide/cluster.md").read_text(encoding="utf-8")
+    assert "site-specific" in text                        # launchers are not portable
+    assert "legacy/historical" in text                    # the two pmi2 recipes
+    assert "blocked" in text                              # 4-GPU is NOT accepted today
+    assert "not** constitute current-environment" in text  # old pass != acceptance
+    assert "EDMTN_MULTIGPU_RESULT" in text
+    assert "not part of the solver's\npublic API" in text or \
+           "not part of the solver's public API" in text
+
+
+def test_performance_page_keeps_measurement_context():
+    text = (ROOT / "docs/guide/performance.md").read_text(encoding="utf-8")
+    assert "dated measurement" in text                    # figures carry their context
+    assert "never a general guarantee" in text
+    assert "not linear in `T`" in text                    # runtime claim stays bounded
+    assert "Minutes-to-hours" not in text                 # no unsourced runtime estimates
+    assert "reproduce_fig4.py" in text and "reproduce_fig6.py" in text
+    assert "illustrative" in text                         # non-paper cutoffs are labelled
+    assert "unused cached" in text                        # not a constant-memory guarantee
+    assert "not a constant-memory guarantee" in text
+
+
+@pytest.mark.parametrize("obj", [SolverConfig, SingleBathEvolution.run,
+                                 SeparableBathEvolution.run])
+def test_cutoff_zero_docstrings_carry_the_max_bond_qualifier(obj):
+    """The no-discard reading of cutoff=0 holds only with max_bond=None."""
+    assert "max_bond=None" in (obj.__doc__ or "")
+
+
+def test_cutoff_zero_docs_carry_the_max_bond_qualifier():
+    for rel in ("README.md", "docs/guide/solving.md", "docs/guide/compression.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "max_bond=None" in text, rel
+
+
+def test_readme_paper_scale_matches_the_reproduce_scripts():
+    """The paper configurations are the reproduce scripts' recorded defaults; other
+    parameter sets must be labelled illustrative, and runtime estimates need a source."""
+    assert "Minutes-to-hours" not in README
+    assert "spin-boson, paper scale" not in README
+    assert "reproduce_fig4.py" in README and "reproduce_fig6.py" in README
+    assert "`cutoff=1e-5`" in README          # fig4's recorded default
+    assert "`cutoff=1e-6`" in README          # fig6's recorded default
+    assert "illustrative" in README           # the tighter-cutoff Gaudin block is labelled
 
 
 def test_model_docstrings_state_ranges_and_capability_boundaries():

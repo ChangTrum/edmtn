@@ -151,9 +151,10 @@ class SolverConfig:
         (to a small tolerance) -- it is NOT silently rounded -- so the grid lands exactly
         on ``T``.  ``n_steps`` caches that integer.
     cutoff : float
-        Truncation threshold (finite, >= 0).  ``0`` keeps every singular value: with
-        ``compress=True`` that is an exact canonicalise + full-SVD recompression, which is
-        NOT the same as skipping compression.
+        Truncation threshold (finite, >= 0).  ``0`` with ``max_bond=None`` discards
+        nothing: the sweep still runs, as a no-discard recompression with the selected
+        method/decomposition -- which is NOT the same as skipping compression.  A
+        rank-limiting ``max_bond`` can truncate even at ``cutoff = 0``.
     cutoff_mode : str
         quimb-native truncation rule; one of :data:`_CUTOFF_MODES`
         (``abs``, ``rel``, ``sum2``, ``rsum2``, ``sum1``, ``rsum1``).  Default ``'rel'``
