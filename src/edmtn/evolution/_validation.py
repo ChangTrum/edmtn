@@ -211,3 +211,22 @@ def validate_separable_bath_kernel(model, kernel_engine) -> int:
     if not callable(getattr(kernel_engine, "for_sub_bath", None)):
         raise ValueError("separable kernel_engine must provide a callable for_sub_bath()")
     return model_K
+
+
+def validate_compression_combination(method, decomp, canon) -> None:
+    """Reject compression-knob combinations quimb's method path cannot execute.
+
+    quimb's ``dm`` (density-matrix) 1D-compress reaches ``tensor_split`` with PSD-split
+    keywords and forwards ``canonize_opts`` into the split driver, so only the exact
+    eigh driver with the default quimb canonicalisation accepts its call signature; any
+    other combination leaks a deep quimb ``TypeError``.  Shared by ``SolverConfig``
+    (Track 1), both direct ``run()`` entry points and ``QuimbEDM.compress()``: the
+    driver and direct evolution entry points reject the combination before tensor
+    construction; ``QuimbEDM.compress()`` rejects it before any compression work or
+    the ``n <= 1`` early return.
+    """
+    if method == "dm" and (decomp != "exact" or canon != "quimb"):
+        raise ValueError(
+            "compress_method='dm' supports only compress_decomp='exact' with "
+            f"compress_canon='quimb'; got compress_decomp={decomp!r}, "
+            f"compress_canon={canon!r}")

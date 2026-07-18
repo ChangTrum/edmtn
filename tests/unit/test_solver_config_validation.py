@@ -177,3 +177,33 @@ def test_legal_values_pass():
     assert SolverConfig(eps=0.1, T=1.0, max_bond=None).max_bond is None
     assert SolverConfig(eps=0.1, T=1.0, expansion_order=1).expansion_order == 1
     assert SolverConfig(eps=0.1, T=1.0, record_rho=True).record_rho is True
+
+
+# -- compression-combination guard (dm supports exact+quimb only; Track 1) -------------------
+
+@pytest.mark.parametrize("kw", [
+    dict(compress_method="dm", compress_decomp="rsvd"),
+    dict(compress_method="dm", compress_canon="householder"),
+    dict(compress_method="dm", compress_canon="cholqr"),
+])
+def test_dm_unsupported_combination_rejected(kw):
+    with pytest.raises(ValueError, match="dm"):
+        SolverConfig(eps=0.1, T=0.2, **kw)
+
+
+def test_dm_exact_quimb_accepted():
+    cfg = SolverConfig(eps=0.1, T=0.2, compress_method="dm")
+    assert (cfg.compress_method, cfg.compress_decomp, cfg.compress_canon) == \
+        ("dm", "exact", "quimb")
+
+
+@pytest.mark.parametrize("kw", [
+    dict(compress_method="dm", compress_decomp="rsvd"),
+    dict(compress_method="dm", compress_canon="householder"),
+    dict(preset="balanced", compress_method="dm"),
+])
+def test_hpc_still_carries_unused_track1_compression_knobs(kw):
+    """The guard is Track-1 only: 'hpc' never consumes the compression fields, and
+    this fix must not silently tighten that contract."""
+    cfg = SolverConfig(eps=0.1, T=0.2, backend="hpc", **kw)
+    assert cfg.backend == "hpc"

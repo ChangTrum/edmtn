@@ -60,3 +60,10 @@ def test_preset_end_to_end_matches_exact(preset):
     err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
                               - np.asarray(got.polarization[:n]))))
     assert err < 1e-4
+
+
+def test_preset_plus_dm_rejected_on_track1():
+    """A preset forces compress_decomp='rsvd', which 'dm' cannot execute; the
+    combination guard runs after preset resolution and must reject it."""
+    with pytest.raises(ValueError, match="dm"):
+        SolverConfig(eps=0.1, T=0.2, preset="balanced", compress_method="dm")

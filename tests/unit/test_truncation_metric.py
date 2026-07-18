@@ -241,3 +241,35 @@ def test_accumulator_handles_cupy_scalars():  # pragma: no cover - GPU node only
     acc["error"] = cp.asarray([1.0, 2.0])           # batched -> max on device, then .item()
     assert acc.max_weight == pytest.approx(9.0)
     assert isinstance(acc.max_weight, float)
+
+
+# -- dm supports exact+quimb only: rejected before any tensor work ---------------------------
+
+@pytest.mark.parametrize("kw", [
+    dict(decomp="rsvd", decomp_q=2),
+    dict(canon="householder"),
+    dict(canon="cholqr"),
+])
+def test_direct_compress_rejects_dm_combination(kw):
+    q = _edm()
+    with pytest.raises(ValueError, match="dm"):
+        q.compress(cutoff=0.0, cutoff_mode="rel", method="dm", max_bond=2, **kw)
+
+
+def test_direct_compress_rejects_dm_combination_even_single_site():
+    """The guard fires before the n <= 1 early return: an illegal combination is
+    illegal regardless of chain length."""
+    q = _edm(n=1)
+    with pytest.raises(ValueError, match="dm"):
+        q.compress(cutoff=0.0, cutoff_mode="rel", method="dm", max_bond=2, decomp="rsvd")
+
+
+def test_dm_exact_quimb_solve_completes_with_numeric_metric():
+    """Positive control: the guard must not break the legal dm path, which still
+    reports a numeric (never None) truncation metric."""
+    from edmtn.driver import solve  # noqa: PLC0415
+    from edmtn.models import GaudinModel  # noqa: PLC0415
+    res = solve(GaudinModel(g=1.0, K=2), T=0.2, eps=0.1, channel=3,
+                compress_method="dm")
+    assert res.truncation_errors, "expected at least one recorded metric entry"
+    assert all(isinstance(w, float) for w in res.truncation_errors)

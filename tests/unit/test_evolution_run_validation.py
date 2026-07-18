@@ -352,3 +352,32 @@ def test_separable_every_legal_cutoff_mode_runs(mode):
     res = SeparableBathEvolution().run(
         model, engine, eps=0.1, n_steps=1, cutoff=1e-8, cutoff_mode=mode, record_every=1)
     assert res.n_sub_baths == 1
+
+
+# -- compression-combination guard: dm supports exact+quimb only (fail before construction) --
+
+_DM_BAD = [
+    dict(compress_method="dm", compress_decomp="rsvd"),
+    dict(compress_method="dm", compress_canon="householder"),
+    dict(compress_method="dm", compress_canon="cholqr"),
+]
+
+
+@pytest.mark.parametrize("evo_kw", _DM_BAD)
+def test_single_rejects_dm_combination_before_construction(monkeypatch, evo_kw):
+    model, engine = _single()
+    evo = SingleBathEvolution(**evo_kw)
+    calls, convert = _spy_single(monkeypatch, evo, engine)
+    with pytest.raises(ValueError, match="dm"):
+        evo.run(model, engine, convert=convert, **_single_kwargs())
+    assert all(v == 0 for v in calls.values())
+
+
+@pytest.mark.parametrize("evo_kw", _DM_BAD)
+def test_separable_rejects_dm_combination_before_construction(monkeypatch, evo_kw):
+    model, engine = _separable()
+    evo = SeparableBathEvolution(**evo_kw)
+    calls, convert = _spy_separable(monkeypatch, evo, engine)
+    with pytest.raises(ValueError, match="dm"):
+        evo.run(model, engine, convert=convert, **_separable_kwargs())
+    assert all(v == 0 for v in calls.values())

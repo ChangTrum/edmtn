@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import math
 
+from ._validation import validate_compression_combination
 from .mps_utils import EDMMPS
 
 
@@ -202,6 +203,9 @@ class QuimbEDM:
         ``canon`` selects the canonicalisation QR (``'quimb'`` default, ``'householder'``,
         ``'cholqr'``).  See :mod:`edmtn.evolution.quimb_decomp`.
         """
+        # illegal combinations are rejected regardless of chain length -- before the
+        # n <= 1 early return, so a direct low-level call can never leak a TypeError
+        validate_compression_combination(method, decomp, canon)
         import quimb.tensor as qtn  # noqa: PLC0415
 
         if self.n <= 1:  # nothing to compress -> a genuine zero, not a stale inherited value

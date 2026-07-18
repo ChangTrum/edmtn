@@ -35,6 +35,7 @@ import numpy as np
 from ..expansion.second_order import SecondOrderExpander
 from ._validation import (
     validate_bool,
+    validate_compression_combination,
     validate_cutoff_mode,
     validate_expansion_order,
     validate_final_time,
@@ -180,6 +181,8 @@ class SeparableBathEvolution:
         compress = validate_bool("compress", compress)
         record_every = validate_positive_int("record_every", record_every)
         cutoff_mode = validate_cutoff_mode("cutoff_mode", cutoff_mode)
+        validate_compression_combination(
+            self.compress_method, self.compress_decomp, self.compress_canon)
         order = validate_expansion_order("evolution order", self.expander.order)
         # structural model/kernel check: d_phys, matching K, for_sub_bath interface
         K = validate_separable_bath_kernel(model, kernel_engine)

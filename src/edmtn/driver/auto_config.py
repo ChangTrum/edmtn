@@ -19,6 +19,7 @@ from ..expansion.second_order import SecondOrderExpander
 from ..kernels.gaussian_mpo import GaussianKernelEngine
 from ..kernels.separable_mpo import SeparableKernelEngine
 from ..evolution._validation import CUTOFF_MODES as _CUTOFF_MODES
+from ..evolution._validation import validate_compression_combination
 from ..evolution.separable_bath import SeparableBathEvolution
 from ..evolution.single_bath import SingleBathEvolution
 
@@ -274,6 +275,13 @@ class SolverConfig:
             if self.compress_decomp == "exact":  # only fill if left at the default
                 _set("compress_decomp", spec["compress_decomp"])
                 _set("compress_decomp_q", spec["compress_decomp_q"])
+
+        # After preset resolution (a preset can move decomp onto 'rsvd'), Track 1 only:
+        # 'hpc' does not consume the compression fields at all, and this guard must not
+        # silently tighten that contract.
+        if self.backend != "hpc":
+            validate_compression_combination(
+                self.compress_method, self.compress_decomp, self.compress_canon)
 
     @property
     def n_steps(self) -> int:
