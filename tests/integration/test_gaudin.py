@@ -19,7 +19,7 @@ Z = np.array([[1, 0], [0, -1]], dtype=complex)
 
 
 def _host(a):
-    """NumPy view of an array that may live on the GPU (auto backend)."""
+    """NumPy view of an array that may live on the GPU."""
     return a.get() if hasattr(a, "get") else np.asarray(a)
 
 
@@ -52,13 +52,14 @@ def test_bond_dims_and_final_state_sane():
     assert len(bonds) == 8
     assert np.all(bonds >= 1) and np.all(bonds <= 64)
     assert len(res.mps.bond_dims) == res.mps.num_sites - 1   # D_t available
-    rho = _host(res.evolution.density_matrices[-1])           # may be on GPU (auto)
+    # per-L final states rho_L(T) are published top-level (no need for res.evolution)
+    rho = _host(res.sub_bath_final_density_matrices[-1])       # may be on GPU
     assert abs(np.trace(rho) - 1.0) < 1e-3
     np.testing.assert_allclose(rho, rho.conj().T, atol=1e-6)
 
 
 def test_sub_baths_folds_only_first_L():
     res = _solve(8, sub_baths=4)
-    assert res.evolution.n_sub_baths == 4
-    assert res.evolution.recorded_L[-1] == 4
+    assert res.sub_baths_used == 4          # actual folded count, top-level
+    assert res.sub_bath_counts[-1] == 4
     assert len(res.bond_dims) == 4

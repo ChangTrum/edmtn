@@ -1,5 +1,22 @@
 # Track 2 — cuQuantum (cuTensorNet) HPC track: design & status
 
+> ## Current status (supersedes the phase plan below)
+>
+> | item | status |
+> |---|---|
+> | Track 2 scope | **exact-only**, and **separable/Gaudin only** (no spin-boson) |
+> | truncation knobs on Track 2 | none (`cutoff`/`max_bond`/`compress_*` are N/A) |
+> | `time_windows` | **not implemented** — any non-`None` raises `NotImplementedError` |
+> | Track 1 single-GPU parity | **verified on real hardware** |
+> | Track 2 single-GPU cuTensorNet | **verified on real hardware** |
+> | Track 2 multi-GPU (4-GPU distributed) | **currently blocked** by a CUDA-aware-MPI regression in the test cluster's environment — a site environment issue, not a model/pipeline defect. An older job passed historically; that is NOT current-environment acceptance |
+> | multi-GPU requirements | one MPI rank per **distinct physical** GPU, CUDA-aware MPI, `CUTENSORNET_COMM_LIB`, `pathfinder='cuquantum'` (cotengra is not supported multi-rank) |
+>
+> The Phase A/B/C/D sections below are the **historical plan** (including an `approximate`
+> Track 2 that was dropped); they do not define the current API. Current launch recipe +
+> status: [`cluster/test_gpu_hpc.sbatch`](../../cluster/test_gpu_hpc.sbatch).
+
+
 > **STATUS UPDATE (2026-06-29): Track 2 is EXACT-ONLY.** The original two-mode plan
 > (exact + approx) is retired. The exact 2D contraction is validated single- and
 > multi-GPU (≤1.9e-15 vs Track 1; 4×A800 distributed, job 46508). The **approx mode

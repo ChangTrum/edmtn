@@ -186,8 +186,9 @@ def _mpi_context():
     """Return ``(comm, rank, size)`` if launched multi-rank under MPI, else ``None``.
 
     Detected from the launcher's env (PMI/SLURM/OMPI) so a normal single-process
-    call never imports mpi4py or initializes MPI. cuTensorNet's only multi-GPU mode
-    is one rank per GPU; launch e.g. ``srun --mpi=pmi2 --ntasks=4 python script.py``.
+    call never imports mpi4py or initializes MPI. cuTensorNet's only multi-GPU mode is
+    **one MPI rank per physical GPU**, launched with a CUDA-aware MPI runtime; the exact
+    launcher is site-specific (see ``cluster/`` for the current test recipes and their status).
     """
     import os  # noqa: PLC0415
     n = 1
@@ -421,8 +422,9 @@ def _hpc_efficiency_hint(ngpu: int, metrics: dict | None) -> None:
         warnings.warn(
             "backend='hpc' is running on a single GPU. Its advantage is the multi-GPU "
             "capacity lever for large exact contractions; for small problems Track 1 "
-            "(backend='cpu'/'gpu') is usually faster. To use more GPUs, launch one rank "
-            "per GPU (e.g. `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>`).",
+            "(backend='cpu'/'gpu') is usually faster. To use more GPUs, launch one MPI "
+            "rank per physical GPU with a CUDA-aware MPI runtime (see cluster/ for the "
+            "current launch recipes and their status).",
             stacklevel=2)
     elif slices is not None and slices <= 1:
         warnings.warn(

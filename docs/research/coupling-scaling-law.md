@@ -2,7 +2,7 @@
 
 A study of how the EDM's per-fold subspace increment scales with the coupling distribution.
 Model: Gaudin central spin-1/2, several coupling profiles normalised to Σ_k g²_k = g². Tooling:
-`examples/studies/coupling_distributions.py`.
+`examples/research/coupling_distributions.py`.
 
 ## Summary
 
@@ -53,7 +53,8 @@ Selectable via `GaudinModel(coupling=..., coupling_params=...)`:
 | `random` | ∼ Uniform(0,1) | seed | sorted descending |
 | `ou` | \|AR(1)/OU sequence\|, c_k = ρ c_{k−1} + √(1−ρ²) z_k | ρ, seed | **not sorted** |
 
-All but `ou` are folded strongest-first (the paper's convention, under which x decreases
+All but `ou` are sorted descending and so are folded strongest-first (the paper's
+convention, under which x decreases
 monotonically with L and L\* is well-defined). `ou` is left in generation order so the
 nearest-neighbour correlation survives (sorting would collapse every ρ to the same half-normal
 spectrum); for `ou`, x is non-monotonic and only the scaling-law fit is meaningful, not L\*.
@@ -182,14 +183,14 @@ structure.
 
 ## 7. Reproduction
 ```
-PYTHONPATH=src python examples/studies/coupling_distributions.py \
+PYTHONPATH=src python examples/research/coupling_distributions.py \
     --K 49 --T 3 --eps 0.2 --seeds 4 --cutoff 1e-9 --device gpu --name coupling_dist_K49_tight
 # cluster: sbatch --parsable cluster/coupling_dist.sbatch   (c1, 1×A800)
-PYTHONPATH=src python examples/studies/coupling_distributions.py --replot <results>.json
+PYTHONPATH=src python examples/research/coupling_distributions.py --replot <results>.json
 ```
 Model option: `GaudinModel(g, K, coupling='linear'|'uniform'|'exp'|'random'|'ou'|<array>,
 coupling_params={'beta':..,'rho':..,'seed':..})`. Outputs (gitignored) in
-`examples/studies/{data,pictures}/coupling_dist/`.
+`examples/research/{data,pictures}/coupling_dist/`.
 
 ## 8. Open directions
 - exp large-β tail under higher-than-double precision (a numerical check; those baths are

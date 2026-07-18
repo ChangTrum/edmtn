@@ -155,7 +155,7 @@ def test_auto_defaults_to_cpu():
     model = GaudinModel(g=1.0, K=4)
     res = EDMSolver.from_model(
         model, T=0.4, eps=0.1, expansion_order=2, cutoff=1e-8
-    ).solve(channel=3)  # backend defaults to 'auto' -> cpu
+    ).solve(channel=3)  # backend defaults to 'cpu' (there is no 'auto')
     assert res.backend.startswith("cpu")
     assert "cupy" not in type(res.mps.tensors[0]).__module__
 

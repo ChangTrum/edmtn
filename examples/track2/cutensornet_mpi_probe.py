@@ -2,7 +2,9 @@
 
 Run on c1 across 4×A800 (one rank per GPU):
 
-    srun --mpi=pmi2 --ntasks=4 python examples/cutensornet_mpi_probe.py
+    <site MPI launcher, one rank per physical GPU> python examples/track2/cutensornet_mpi_probe.py
+    (see cluster/ for the current test recipes + status; the old `srun --mpi=pmi2` line is a legacy
+     diagnostic and is NOT currently the recommended command)
 
 Confirms the distributed stack end-to-end: MPI launch + per-rank GPU pinning,
 **CUDA-aware MPI** (cuTensorNet's distributed reduction needs it), the

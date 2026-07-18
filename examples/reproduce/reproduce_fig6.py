@@ -2,7 +2,8 @@
 problems* (arXiv:2509.00424): the Gaudin (central-spin) model.
 
 Fig. 6a: central-spin polarization <S_z> vs the scaled time g_L * t, with the
-         first L (strongest) bath spins included, for several L.
+         first L bath spins in stored coupling order (strongest-first here, since the
+         paper's default `linear` profile is sorted), for several L.
 Fig. 6b: EDM bond dimension D_t vs g_L * t.
 
 The striking result is that both curves nearly collapse onto a *universal* curve

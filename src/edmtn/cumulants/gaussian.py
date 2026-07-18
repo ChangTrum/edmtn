@@ -46,7 +46,9 @@ class GaussianCumulants:
     n_steps : int
         Number of steps ``N`` (the grid covers lags ``0 .. N``).
     f : np.ndarray
-        Complex array of shape ``(N + 1,)`` with ``f[m] = f(m * eps)``.
+        Complex array of shape ``(N + 1,)`` with ``f[m] = f(m * eps)``.  The container takes a
+        **private copy at construction and marks it read-only**: mutating the array you passed
+        in afterwards does not change these recorded cumulants, and writing to ``f`` raises.
     """
 
     eps: float

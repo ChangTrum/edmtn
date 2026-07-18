@@ -1,9 +1,25 @@
 # CPU vs GPU for the EDM solver (Phase 1/2 measurements)
 
+> **Measurements below are HISTORICAL** (Phase-1/2 era, specific hardware + parameters). They
+> are kept as a record and do NOT describe current capability or current defaults.
+
+## Current status (2026-07)
+
+- `compress_decomp='rsvd'` (Track-1 randomized SVD + guard) and the `balanced`/`robust` presets
+  are implemented and available on CPU/GPU; see [../guides/recommended-config.md](../guides/recommended-config.md).
+- `precision='mixed'` is **experimental**: only the contraction tensors are cast, the separate
+  f64 decomposition re-cast is not wired into `solve()`, and its end-to-end check is skipped.
+- GPU/HPC tests are gated by real hardware detection with `--require-gpu` / `--require-cuquantum`
+  / `--require-multigpu=N` (P1-14). Track-1 single-GPU parity and Track-2 single-GPU cuTensorNet
+  are verified on hardware; the 4-GPU distributed path is currently blocked by a CUDA-aware-MPI
+  regression in the test cluster's environment.
+- The default backend is `cpu` (there is no `auto`).
+
+
 ## Decision
 
 **Phase 1 (spin-boson) and Phase 2 (Gaudin) run on the CPU by default**
-(`backend='auto'` → CPU).  The GPU is fully wired, validated, and selectable
+(the default `backend='cpu'`).  The GPU is fully wired, validated, and selectable
 (`backend='gpu'`), but it is *not* the faster path at the problem sizes these
 phases reach, so it stays opt-in until the Phase-3 decomposition work makes it
 worthwhile.  All GPU infrastructure (CuPy backend, `ArrayFactory.auto`,
@@ -75,7 +91,7 @@ decomposition layer (technical plan §6.3–6.4):
   `4 · D_c` product is never formed — removing the memory wall and making
   `D_c = 400` feasible on the GPU.
 
-Once those land, `backend='auto'` for the separable (and future chain/Kondo)
+Once those land, the default backend for the separable (and future chain/Kondo)
 pipelines should flip to GPU-primary, and these benchmarks rerun to confirm the
 crossover.
 

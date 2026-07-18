@@ -1,7 +1,15 @@
 # Recommended canonicalisation + compression configuration
 
+> **Scope.** `preset=None` is the API default (`compress_decomp='exact'`, deterministic full
+> SVD — and the only setting that can report a real truncation metric). The presets below are
+> *recommendations*; each one sets **only** `compress_decomp='rsvd'` plus `compress_decomp_q`
+> (`0` for `balanced`, `2` for `robust`) and never touches `compress_canon` or `backend`.
+> All numbers here are measurements on specific hardware/parameters, not error guarantees.
+
+
 Distilled from the incremental-update / bottleneck study (`incremental-update-research.md`,
-§13–§16). Two presets are recommended: a **balanced default** and an **accuracy/stability
+§13–§16). Two presets are offered as *recommendations* (the API default is `preset=None`):
+a **balanced** option and an **accuracy/stability
 fallback**. All measurements are end-to-end Gaudin folds (K=24, T=3 g⁻¹, ε=0.2 g⁻¹, order 2)
 vs the unmodified pipeline (`EDMSolver`, full-SVD + Householder QR), on CPU.
 
@@ -22,24 +30,28 @@ and the one CPU regression we saw (CholQR slower than QR at very tight ξ, §14)
 flop-doubling + shift escalation and **may not survive on GPU** where GEMM throughput
 dominates — this must be re-measured on the actual H200/5090 (see open question below).
 
-## Preset 1 — `balanced` (default)
+## Preset 1 — `balanced` (a recommendation, NOT the API default)
 
 | layer | choice |
 |---|---|
-| canonicalisation | **Householder QR** (the default; fastest on GPU and at tight ξ — see below) |
+| canonicalisation | **not set by the preset** — `compress_canon` stays whatever you configure (default `'quimb'`). Householder (`compress_canon='householder'`) measured fastest on GPU/tight ξ; set it explicitly if you want it |
 | compression | **single-pass randomised SVD** (`n_iter=0`, oversample 10, spectral resolution guard) |
 
-**Why.** Single-pass rSVD is the dominant, regime-robust win: accuracy always below the
-cutoff (1.5e-7 at ξ=1e-6, 8e-10 at ξ=1e-8), seed-independent, no tuning, no reference run
-needed (the resolution guard grows the sketch until the computed tail drops below ξ).
+**Why.** Single-pass rSVD was the dominant win in the measurements below: on that hardware and
+those parameters the observed deviation came out at 1.5e-7 (ξ=1e-6) and 8e-10 (ξ=1e-8), with no
+tuning and no reference run (the resolution guard grows the sketch until the computed tail drops
+below ξ). These are **measured results, not a guarantee** — rSVD stays a randomized algorithm,
+and its accuracy is not bounded by ξ in general.
 
 **Canonicalisation = Householder QR (not CholeskyQR2).** Measurement settled this:
 CholeskyQR2 only beats Householder on the *canonicalisation step* on **CPU at moderate ξ**
 (~1.13× there, §14); it **loses at tight ξ on CPU** (flop-doubling + shift escalation, §14)
 and **loses across all ξ on the GPU** (A800 P5b: Householder is fastest, deficit growing to
 −14% at χ=371 — cuSOLVER `geqrf` is already efficient and CholQR2's 2-pass GEMM overhead does
-not pay). Since the deployment target is GPU-primary, Householder QR is the right default
-everywhere. `CholeskyQR(passes=2)` remains available (`canonicalization=CholeskyQR()`,
+not pay). Since the deployment target is GPU-primary, Householder QR is the better choice in
+these measurements — but note the **API default is `compress_canon='quimb'`**, and no preset
+changes it; set `compress_canon='householder'` explicitly if you want it.
+`compress_canon='cholqr'` remains available (Cholesky QR,
 machine-precision orthogonality, per-bond Householder fallback) for the narrow CPU-moderate-ξ
 niche, but it is **not** the default.
 
@@ -58,18 +70,21 @@ niche, but it is **not** the default.
 
 | layer | choice |
 |---|---|
-| canonicalisation | **Householder QR** (orthogonal, conditioning-immune) |
-| compression | **cold randomised SVD** (`n_iter=2`) — or **full SVD** for full determinism |
+| canonicalisation | **not set by the preset** — `compress_canon` stays as configured (default `'quimb'`); `'householder'` measured best here, set it explicitly |
+| compression | **cold randomised SVD** (`compress_decomp='rsvd'`, `compress_decomp_q=2`). NOTE the preset does NOT select full SVD — for that use `compress_decomp='exact'` with **no** preset |
 
 **Why.** Householder QR is immune to conditioning (§16: the raw folded MPS has left-environment
 cond ≈ 1/ξ² ≈ 1e12; only an orthogonal transform survives it), so it never degrades regardless
-of regime. Cold rSVD restores the **exact baseline bond dimensions** (no over-retention even at
-tight ξ) at accuracy ~1e-12, while staying GEMM-based (faster than full SVD, and far faster on
-GPU). For maximum trust — no randomisation at all, bit-reproducible — use **full SVD**, which is
-the unmodified pipeline.
+of regime. In these measurements cold rSVD reproduced the baseline bond dimensions (no
+over-retention even at tight ξ) at ~1e-12 deviation, while staying GEMM-based. Note this preset
+is **still randomized rSVD** (`compress_decomp='rsvd'`, `q=2`) — it does **not** give exact bond
+dimensions or bit-reproducibility as a guarantee. For no randomisation at all, use **no preset**
+with `compress_decomp='exact'` (the API default), which is also the only setting that can report
+a real truncation metric.
 
-**When to switch to this preset:** very tight cutoff; suspected ill-conditioning; when exact
-bond dimensions or ≤1e-12 accuracy or bit-reproducibility are required.
+**When to switch to this preset:** very tight cutoff; suspected ill-conditioning. If you
+actually *require* determinism/bit-reproducibility or a measurable truncation metric, do not use
+a preset at all — use `compress_decomp='exact'`.
 
 ## Regime guidance
 
@@ -77,7 +92,7 @@ bond dimensions or ≤1e-12 accuracy or bit-reproducibility are required.
 |---|---|
 | production, moderate cutoff (ξ ≳ 1e-7), GPU | `balanced` |
 | very tight cutoff (ξ ≲ 1e-8) | `robust` (or `balanced` — auto-degrades, still correct) |
-| need exact bonds / max accuracy / reproducibility | `robust` with full SVD |
+| need exact bonds / max accuracy / reproducibility / a real truncation metric | **no preset** + `compress_decomp='exact'` |
 | CPU-only batch where Householder QR is cheap anyway | either; `balanced` still wins on compression |
 
 ## Rejected approaches (do not revisit without new information)
@@ -90,12 +105,13 @@ bond dimensions or ≤1e-12 accuracy or bit-reproducibility are required.
 ## GPU measurement (single A800) — single-pass rSVD validated at scale
 
 Measured on an A800 vs a 256-thread EPYC 9754 (`docs/gpu-scaling-benchmark.md`):
-single-pass rSVD (`RandomizedSVD(n_iter=0)`, the `balanced` compression) runs
+single-pass rSVD (`compress_decomp='rsvd'`, `compress_decomp_q=0` — the `balanced` compression) runs
 **7.1× → 10.8× → 15.5× faster than the fully-provisioned CPU full-SVD pipeline**
 as the bond grows χ = 95 → 175 → 325, at accuracy below the cutoff and matching
 bonds — and the advantage **grows with problem size**. rSVD beats GPU full-SVD by a
 steady ~2× (the BLAS-3 payoff). So on GPU, **`balanced` (single-pass rSVD) is the
-clear default**, and the GPU is the path for the large-scale regime (small χ does
+recommended choice in this measured regime** (the API default remains `preset=None`), and the
+GPU is the path for the large-scale regime (small χ does
 not need it). Also measured: **MKL gives no benefit over OpenBLAS on Zen 4** (tie
 within ~2%) — BLAS choice is immaterial on AMD for this workload.
 
@@ -105,7 +121,8 @@ within ~2%) — BLAS choice is immaterial on AMD for this workload.
   CholeskyQR in `src/`; P5b measured it on an A800 (`docs/gpu-scaling-benchmark.md`):
   Householder QR is fastest at every ξ, the CholQR2 deficit *growing* with χ (−14% at
   χ=371). The hypothesis that GPU GEMM throughput would keep CholQR2 ahead is refuted —
-  cuSOLVER `geqrf` is already efficient. Householder QR is the canon default everywhere;
+  cuSOLVER `geqrf` is already efficient. Householder QR measured best here, but is opt-in
+  (`compress_canon='householder'`); the API default stays `'quimb'`;
   CholeskyQR2 is kept selectable for the CPU-moderate-ξ niche only.
 - **FP64 Tensor Core (DMMA) for complex128 — RESOLVED (engaged; no split needed).** Measured
   on an A800 (`docs/gpu-scaling-benchmark.md`, item 1): both DGEMM **and** ZGEMM sustain

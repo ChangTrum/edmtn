@@ -83,11 +83,15 @@ class SeparableCorrelation:
     n_steps : int
         Number of steps ``N`` (sites in the time-ordered MPS).
     couplings : np.ndarray
-        Per-sub-bath couplings ``g_k`` (length ``K``).
+        Per-sub-bath couplings ``g_k`` (length ``K``), in the model's stored order.
     transfer : np.ndarray
         Transfer tensors ``A[k, phi, a, a']`` of shape ``(K, d_phys, D_a, D_a)``;
         ``A[k]`` is the (time-independent) Eq.-F1 local tensor of sub-bath ``k``
         in the superoperator-index convention.
+
+    Both arrays are **privately copied at construction and marked read-only**: mutating the
+    arrays you passed in afterwards cannot change this correlation, and writing to either
+    attribute raises.
     """
 
     eps: float

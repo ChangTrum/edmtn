@@ -1,5 +1,11 @@
 # Incremental subspace update for separable-bath EDM folds — research record
 
+> **HISTORICAL RECORD.** This document captures decisions/experiments as they were made
+> and is *not* a description of the current public API. Names, defaults and rules quoted
+> here (e.g. the retired `rel_ref` cutoff) may no longer exist. The current contract is
+> the README and the public docstrings.
+
+
 A complete record of the investigation into accelerating the separable-bath EDM
 fold recursion (paper Eq. 21 / Fig. 5c) by reusing the previous step's left
 singular subspace, including the compressed-sensing idea that was tested and

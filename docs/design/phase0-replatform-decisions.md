@@ -1,5 +1,11 @@
 # Phase 0 — re-platform keep/replace decision ledger
 
+> **HISTORICAL RECORD.** This document captures decisions/experiments as they were made
+> and is *not* a description of the current public API. Names, defaults and rules quoted
+> here (e.g. the retired `rel_ref` cutoff) may no longer exist. The current contract is
+> the README and the public docstrings.
+
+
 The plan (`~/.claude/plans/sharded-wishing-blossom.md`) requires a *per-piece*
 keep/replace decision, recorded with evidence, before any cuQuantum code is added.
 Decision criterion (from the plan): **bias to the library** (quimb / cotengra /

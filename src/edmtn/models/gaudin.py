@@ -25,9 +25,19 @@ profile
     g_k = g * sqrt(6K / (2K^2 + 3K + 1)) * (K + 1 - k) / K,   k = 1..K,
 
 normalised so that ``sum_k g_k^2 = g^2``.  Other profiles (``uniform``, ``exp``,
-``random``, or an explicit array) are selectable via the ``coupling`` argument --
-see :data:`COUPLING_PROFILES` -- to study how the EDM's structure depends on the
+``random``, ``ou``, or an explicit array) are selectable via the ``coupling`` argument
+-- see :data:`COUPLING_PROFILES` -- to study how the EDM's structure depends on the
 *shape* of the coupling distribution rather than the model itself.
+
+Ordering and normalisation differ by profile, and the distinction matters because
+``sub_baths=L`` selects the first ``L`` couplings **in stored order**:
+
+* ``linear`` / ``uniform`` / ``exp`` / ``random`` -- normalised AND sorted descending, so
+  "first ``L``" is strongest-first;
+* ``ou`` -- normalised but kept in **generation order** (sorting would destroy the
+  sequential correlation it exists to model), so "first ``L``" is NOT strongest-first;
+* an explicit array -- taken **verbatim**: any sign, no sorting, no normalisation, so
+  ``g_K == g`` does not hold and ``g`` no longer sets the scale.
 """
 
 from __future__ import annotations
@@ -185,10 +195,16 @@ COUPLING_PROFILES = {
 
 
 def coupling_profile(kind: str, g: float, K: int, **params) -> np.ndarray:
-    """Return the named coupling profile ``g_k`` (descending, ``sum g_k**2 == g**2``).
+    """Return the named coupling profile ``g_k``, normalised to ``sum_k g_k**2 == g**2``.
+
+    Ordering is **not** uniform across profiles: ``linear`` / ``uniform`` / ``exp`` /
+    ``random`` are returned **sorted descending**, but ``ou`` is deliberately **left in
+    generation order** (sorting would destroy the sequential correlation that is the whole
+    point of that profile).  Every named profile is normalised.
 
     ``kind`` is one of :data:`COUPLING_PROFILES`; ``params`` are the profile's own
-    knobs (``beta`` for ``exp``; ``seed``/``low``/``high`` for ``random``).
+    knobs (``beta`` for ``exp``; ``seed``/``low``/``high`` for ``random``;
+    ``rho``/``seed`` for ``ou``).
     """
     try:
         fn = COUPLING_PROFILES[kind]
@@ -206,14 +222,19 @@ class GaudinBathParams:
     Parameters
     ----------
     g : float
-        Base coupling constant; ``sum_k g_k**2 == g**2``.  Sets the time unit.
+        Base coupling constant; finite, ``> 0``.  ``sum_k g_k**2 == g**2`` holds for the
+        **normalised named profiles only** -- a custom coupling array is used verbatim, so
+        neither that identity nor ``g_K == g`` is guaranteed and ``g`` no longer sets the scale.
     K : int
-        Number of bath spin-1/2.
+        Number of bath spin-1/2; a strict non-``bool`` integer ``>= 1``.
     couplings : ndarray
-        The per-sub-bath couplings ``g_k`` (length ``K``), descending.
+        The per-sub-bath couplings ``g_k`` (length ``K``), in the model's **stored order**
+        -- descending for ``linear``/``uniform``/``exp``/``random``, generation order for
+        ``ou``, and exactly as supplied for a custom array.  A private read-only copy.
     temperature : float
-        Bath temperature; ``inf`` (the only validated case) means each bath spin
-        is maximally mixed (``I/2``).
+        Bath temperature.  Real ``+inf`` -- each bath spin maximally mixed (``I/2``) -- is
+        the only supported case: the separable correlation engine raises
+        ``NotImplementedError`` for ``-inf``, finite values, ``nan`` or ``bool``.
     """
 
     g: float
@@ -234,20 +255,34 @@ class GaudinModel(AbstractOQSModel):
     Parameters
     ----------
     g : float
-        Base coupling constant (sets the time unit ``g^{-1}``).
+        Base coupling constant; finite, ``> 0`` (sets the time unit ``g^{-1}`` for the
+        normalised named profiles).
     K : int
-        Number of bath spins (paper uses ``K = 49``).
+        Number of bath spins; a strict non-``bool`` integer ``>= 1`` (paper uses ``K = 49``).
     time_step_order : int
-        Small-step expansion order used downstream (default ``2``, as in the paper).
+        Small-step expansion order used downstream: a strict non-``bool`` integer ``1`` or ``2``
+        (default ``2``, as in the paper).
     coupling : str | array-like
         The per-sub-bath coupling profile ``g_k``.  Either a named profile from
         :data:`COUPLING_PROFILES` (``"linear"`` -- the paper default, ``"uniform"``,
-        ``"exp"``, ``"random"``) or an explicit length-``K`` array of couplings.
-        Named profiles are normalised so ``sum_k g_k**2 == g**2`` and returned
-        descending; an explicit array is used verbatim (you own its normalisation).
+        ``"exp"``, ``"random"``, ``"ou"``) or an explicit length-``K`` array.
+
+        * **named, sorted**: ``linear`` / ``uniform`` / ``exp`` / ``random`` are normalised
+          (``sum_k g_k**2 == g**2``) and returned **descending**;
+        * **named, unsorted**: ``ou`` is normalised the same way but deliberately kept in
+          **generation order** -- sorting would destroy its sequential correlation;
+        * **custom array**: used **verbatim** in the order given -- any sign (negatives are
+          allowed), **no sorting and no normalisation** are imposed, so ``g_K == g`` is
+          NOT guaranteed and ``g`` no longer sets the scale.
+
+        Downstream, ``sub_baths=L`` always means "the first ``L`` in this stored order",
+        which is strongest-first only for the sorted named profiles.  A supplied array is
+        **privately copied and marked read-only**, so mutating your array afterwards cannot
+        change the model, and ``model.couplings`` itself is not writable.
     coupling_params : dict, optional
         Extra knobs for a named profile (``beta`` for ``"exp"``;
-        ``seed``/``low``/``high`` for ``"random"``).  Ignored for explicit arrays.
+        ``seed``/``low``/``high`` for ``"random"``; ``rho``/``seed`` for ``"ou"``).
+        Ignored for explicit arrays.
     """
 
     bath_type = "separable"

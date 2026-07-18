@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# LEGACY RECIPE (Phase-C1 multi-GPU validation, kept for reference). Its `srun --mpi=pmi2` launch
+# matched the cluster as configured in 2026-06 and is NOT currently working:
+# the site's CUDA-aware MPI stack has since regressed. Use
+# cluster/test_gpu_hpc.sbatch for the current test recipe + status record.
 # Phase C1 — multi-GPU hpc solve validation, c1 / 4×A800 (one rank per GPU).
 #   sbatch --parsable cluster/cutensornet_multigpu.sbatch
 #SBATCH --job-name=cutn-mgpu

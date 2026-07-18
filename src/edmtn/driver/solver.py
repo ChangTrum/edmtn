@@ -79,10 +79,17 @@ class SolverResult:
         The resolved Trotter order actually used (``1`` or ``2``).
     observables : dict[str, ndarray]
         Custom observable histories (empty unless requested + reduced states recorded).
-    mps : EDMMPS
-        Final EDM-MPS (``None`` on Track 2).
-    evolution : EvolutionResult
+        Not supported on separable Track 1 or on Track 2 (both raise ``NotImplementedError``).
+    backend : str
+        The device/track that ACTUALLY ran, e.g. ``'cpu/f64'``, ``'gpu/f64'``,
+        ``'hpc/exact/cuquantum'`` (``.../<n>gpu`` when distributed).  A requested GPU that
+        was unavailable shows as CPU with a ``(fallback: ...)`` suffix, so this is the
+        honest record of what executed -- not what was asked for.
+    mps : EDMMPS or None
+        Final EDM-MPS; ``None`` on Track 2 (the 2D contraction builds no MPS).
+    evolution : EvolutionResult or None
         Raw Layer-5 output (internal; the top-level fields above are the public contract).
+        ``None`` on Track 2, which has no Layer-5 evolution object.
     error_metrics : dict or None
         Track 2 only: reference error metrics (‖ρ−ρ†‖ / |Tr ρ−1| + optimizer stats).
     """
@@ -108,6 +115,9 @@ class SolverResult:
 
     @property
     def max_bond(self) -> int:
+        """Largest entry of the legacy ``bond_dims`` -- so its axis follows that alias:
+        the per-time-step maximum on single-bath Track 1, the per-fold (``L``) maximum on
+        separable Track 1, and ``1`` on Track 2 (whose ``bond_dims`` is ``[]``)."""
         return max(self.bond_dims) if self.bond_dims else 1
 
 
@@ -122,10 +132,16 @@ class TimestepConvergence:
     converged : bool or None
         ``deviation <= tol`` (or ``None`` when no ``tol`` was given).
     metadata : dict
-        Self-describing record of the comparison: the FULL ``coarse_config`` / ``fine_config``
-        (:class:`SolverConfig`, so no field can be silently dropped as new knobs are added),
-        the normalised ``channel``, the ``tolerance``, and the ACTUAL executed
-        ``coarse_backend`` / ``fine_backend`` labels (which reveal e.g. a GPU→CPU fallback).
+        Self-describing record of the comparison, with keys:
+
+        * ``coarse_config`` / ``fine_config`` -- the FULL :class:`SolverConfig` of each run
+          (so no field can be silently dropped as new knobs are added);
+        * ``channel`` -- the normalised 1-based channel;
+        * ``tolerance`` -- the ``tol`` passed in (``None`` if omitted);
+        * ``coarse_backend`` / ``fine_backend`` -- the ACTUAL executed backend labels
+          (revealing e.g. a GPU->CPU fallback);
+        * ``coarse_sub_baths_used`` / ``fine_sub_baths_used`` -- the number of sub-baths
+          each run really folded, read back from the results rather than the request.
 
     Backward compatible with the legacy 2-tuple contract: ``dev, ok = result``,
     ``result[0]`` / ``result[1]`` and ``len(result) == 2`` all still work.

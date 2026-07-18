@@ -135,33 +135,63 @@ def _validated_n_steps(T: float, eps: float) -> int:
 class SolverConfig:
     """Configuration for :class:`~edmtn.driver.solver.EDMSolver`.
 
+    **Frozen and validated at construction.** Every field is checked and normalised in
+    ``__post_init__``; the instance is immutable afterwards (use
+    ``dataclasses.replace`` to derive a variant).  Illegal input -- a huge Python int,
+    ``nan``/``inf``, a ``bool`` posing as an integer, an unknown enum string -- raises
+    ``ValueError`` here, at the entry point, rather than deep inside quimb.
+
     Attributes
     ----------
     eps : float
-        Time step.
+        Time step; finite and > 0.
     T : float
-        Total evolution time; ``T / eps`` must be a positive integer (validated at
-        construction) so the grid lands exactly on ``T``.  ``n_steps`` caches it.
+        Total evolution time; finite and > 0.  ``T / eps`` must be a **positive integer**
+        (to a small tolerance) -- it is NOT silently rounded -- so the grid lands exactly
+        on ``T``.  ``n_steps`` caches that integer.
     cutoff : float
-        SVD truncation precision (``0`` keeps every singular value -- exact but
-        not scalable).
+        Truncation threshold (finite, >= 0).  ``0`` keeps every singular value: with
+        ``compress=True`` that is an exact canonicalise + full-SVD recompression, which is
+        NOT the same as skipping compression.
     cutoff_mode : str
-        Truncation rule (default ``'rel_ref'``, the paper's ``s_i / s_{d^2+1}``).
+        quimb-native truncation rule; one of :data:`_CUTOFF_MODES`
+        (``abs``, ``rel``, ``sum2``, ``rsum2``, ``sum1``, ``rsum1``).  Default ``'rel'``
+        (``s_i / s_max <= cutoff``).  The paper's custom ``rel_ref`` rule -- and the
+        reference-index parameter it needed -- are retired; no such field exists.
     max_bond : int, optional
-        Hard bond-dimension cap.
-    ref_index : int, optional
-        Reference index for ``'rel_ref'`` (defaults to ``d**2``).
+        Hard bond-dimension cap; ``None`` (default) or a positive integer.
     expansion_order : int, optional
-        Trotter order (``1`` or ``2``).  ``None`` (the default) inherits the model's
+        Trotter order (``1`` or ``2``).  ``None`` (**the default**) inherits the model's
         ``time_step_order``; an explicit value overrides it.  Resolved once in the driver
-        (see :func:`resolve_config_for_model`) so every layer uses the same order.
+        (see :func:`resolve_config_for_model`) so every layer -- kernel, expander,
+        observables, Track-2 assembly and ``SolverResult.expansion_order`` -- uses the
+        same value.
     record_rho : bool
-        Store ``rho(t)`` at every step (needed for custom observables).
-    cutoff, cutoff_mode : float, str
-        quimb truncation controls (default ``rel`` -- the built-in closest to the
-        retired ``rel_ref``).
+        Store ``rho(t)`` at every step.  Strictly a ``bool``.  Note some paths record
+        ``rho(t)`` regardless (second-order spin-boson, custom observables).
+    precision : str
+        ``'f64'`` (default) or ``'mixed'`` (f32 contraction / f64 decompose).
     compress_method, compress_decomp, compress_decomp_q, compress_canon :
-        quimb compression controls (see :mod:`edmtn.evolution.quimb_decomp`).
+        quimb compression controls (see :mod:`edmtn.evolution.quimb_decomp`); all are
+        Track-1 only -- ``hpc`` is exact-only and has no 1D-compress sweep.
+    preset : str, optional
+        ``None`` (default), ``'balanced'`` or ``'robust'``; only fills
+        ``compress_decomp``/``compress_decomp_q`` when left at their defaults, and only on
+        Track 1.  An unknown name is rejected on every backend.
+    sub_baths : int, optional
+        Separable only: fold just the first ``L`` sub-baths **in the model's stored
+        coupling order** (strongest-first only for the sorted named profiles).  Validated
+        here as ``None`` or a positive integer, then re-checked against the model's ``K``
+        (``1 <= L <= K``) once ``K`` is known -- never silently clamped or truncated.
+    backend : str
+        ``'cpu'`` (**default**), ``'numpy'``, ``'gpu'``, ``'cupy'`` (Track 1) or ``'hpc'``
+        (Track 2, cuQuantum 2D contraction).  There is no ``'auto'``.
+    pathfinder : str
+        ``hpc`` only: ``'cuquantum'`` (default) or ``'cotengra'``.  Distributed multi-GPU
+        requires ``'cuquantum'``.
+    time_windows : int, optional
+        **Reserved; must be ``None``.** Manual time-window blocking is wired but not
+        implemented -- any non-``None`` value raises ``NotImplementedError`` here.
     """
 
     eps: float
@@ -182,10 +212,11 @@ class SolverConfig:
     # -- backend='hpc' only; ignored otherwise --
     pathfinder: str = "cuquantum"   # 'cuquantum' (default, cuTensorNet owns path) | 'cotengra'
     time_windows: int | None = None  # None = one-shot whole-spacetime; int = manual window blocking
-    # NB: hpc has no GPU-count knob -- it uses every GPU it is launched across (cuTensorNet
-    # is one rank per GPU). Launch one rank per GPU with your own workflow, e.g.
-    # `srun --mpi=pmi2 --ntasks=<#GPUs> --gres=gpu:<#GPUs>` (see cluster/); edmtn
-    # itself does not submit/srun/ssh -- that is the user's job.
+    # NB: hpc has no GPU-count knob -- it uses exactly the GPUs/ranks it was LAUNCHED
+    # across (cuTensorNet is one MPI rank per physical GPU, and needs a CUDA-aware MPI
+    # runtime). Launch it with your own workflow; see cluster/ for the current test recipes
+    # and their status (single-GPU verified; 4-GPU currently blocked by a site MPI issue).
+    # edmtn itself does not submit/srun/ssh -- that is the user's job.
 
     # derived + cached at construction (frozen: set via object.__setattr__ below)
     _n_steps: int = field(init=False, repr=False, compare=False, default=0)

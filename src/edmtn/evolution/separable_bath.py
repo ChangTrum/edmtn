@@ -133,10 +133,11 @@ class SeparableBathEvolution:
         eps, n_steps : float, int
             Time step and number of *physical* steps (the grid has
             ``order * n_steps`` sub-steps).
-        max_bond, cutoff, cutoff_mode, ref_index :
-            Truncation controls for the per-sub-bath compression sweep.  The
-            default ``cutoff_mode='rel_ref'`` with ``ref_index = d**2`` is the
-            paper's ``lambda_a / lambda_{d**2+1} <= xi`` rule.
+        max_bond, cutoff, cutoff_mode :
+            Truncation controls for the per-sub-bath compression sweep.  ``cutoff_mode``
+            defaults to the quimb-native ``'rel'`` (``s_i / s_max <= cutoff``).  The paper's
+            custom ``rel_ref`` rule (``lambda_a / lambda_{d**2+1} <= xi``) -- and the
+            reference-index parameter it needed -- are retired; no such argument exists.
         record_rho : bool
             Record ``rho_L(T)`` after the recorded sub-baths.
         record_every : int

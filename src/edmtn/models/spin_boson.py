@@ -12,8 +12,17 @@ is ``J(w) = 2 J0 * w_c^{1-s} * w^s * e^{-w / w_c}`` for ``w > 0`` (``s = 1`` is
 Ohmic).  In the interaction picture the coupling operator becomes
 ``S_z(t) = cos(mu t) S_z + sin(mu t) S_y``.
 
-The system starts fully polarised along ``+z`` and the bath in vacuum
-(zero temperature).
+The system starts fully polarised along ``+z``, and the bath at the model's
+``temperature`` (default ``0`` -- vacuum).
+
+**Layered capability contract.** The *model* accepts any finite ``temperature >= 0``:
+it is a parameter container and does not itself decide what can be solved.  The
+*Gaussian cumulant engine* (Layer 2) currently implements the **zero-temperature**
+correlation only, so a non-zero temperature raises ``NotImplementedError`` at compute
+time, not at construction.  Keep the two apart when reading errors: an out-of-range or
+non-finite parameter is a ``ValueError`` from the model, an unsupported-but-legal
+setting is a ``NotImplementedError`` from the engine, and legal parameters whose
+correlation overflows float64 give a ``FloatingPointError``.
 """
 
 from __future__ import annotations
@@ -76,7 +85,10 @@ class SpinBosonBathParams:
         Spectral exponent: ``s = 1`` Ohmic, ``s < 1`` sub-Ohmic, ``s > 1``
         super-Ohmic.
     temperature : float
-        Bath temperature (``0`` = vacuum).  Phase-1 validation targets ``T = 0``.
+        Bath temperature; finite and ``>= 0`` (``0`` = vacuum).  The *model* accepts any
+        finite non-negative value, but the Gaussian cumulant engine currently implements
+        the zero-temperature correlation only and raises ``NotImplementedError`` at compute
+        time for a non-zero temperature.
     """
 
     J0: float
@@ -91,17 +103,25 @@ class SpinBosonModel(AbstractOQSModel):
     Parameters
     ----------
     J0 : float
-        Dimensionless system-bath coupling strength.
+        Dimensionless system-bath coupling strength; finite, ``>= 0``.  ``J0 = 0`` is a
+        legal no-coupling baseline (the spectral density and Gaussian correlation are then
+        exactly zero), not an invalid value.
     omega_c : float
-        Bath cutoff frequency.
+        Bath cutoff frequency; finite, ``> 0``.
     mu : float
-        Transverse tunnelling strength (``H_S = mu S_x``); sets the time unit.
+        Transverse tunnelling strength (``H_S = mu S_x``); finite, ``> 0``.  Sets the time unit.
     s : float
-        Spectral exponent (default ``1.0``, Ohmic).
+        Spectral exponent; finite, ``> 0`` (default ``1.0``, Ohmic).
     temperature : float
-        Bath temperature (default ``0.0``).
+        Bath temperature; finite, ``>= 0`` (default ``0.0``).  Accepted here, but the Gaussian
+        cumulant engine currently supports only ``0`` -- a non-zero value raises
+        ``NotImplementedError`` when the correlation is computed, not at construction.
     time_step_order : int
-        Small-step expansion order used downstream (default ``2``).
+        Small-step expansion order used downstream: a strict non-``bool`` integer ``1`` or ``2``
+        (default ``2``).
+
+    Out-of-range or non-finite parameters raise ``ValueError`` here; legal parameters whose
+    correlation overflows float64 raise ``FloatingPointError`` at compute time.
     """
 
     bath_type = "gaussian"

@@ -1,6 +1,8 @@
 """Phase C1 — multi-GPU hpc solve validation (cuTensorNet distributed).
 
-    srun --mpi=pmi2 --ntasks=4 python examples/cutensornet_multigpu.py
+    <site MPI launcher, one rank per physical GPU> python examples/track2/cutensornet_multigpu.py
+    (see cluster/ for the current test recipes + status; the old `srun --mpi=pmi2` line is a legacy
+     diagnostic and is NOT currently the recommended command)
 
 Each rank calls the unified ``solve(backend='hpc')`` (Track 2 = exact 2D); the
 2D EDM contraction is distributed across the 4×A800 by cuTensorNet (auto-detected

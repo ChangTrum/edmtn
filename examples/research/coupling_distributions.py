@@ -8,9 +8,12 @@ sub-baths matter progressively less -- the bond dimension stops growing (~L=15),
 and eventually pure projection (no SVD) suffices (~L=24).  **Open question:** is
 that driven by the *shape* of ``g_k`` or by the model itself?
 
-We test four coupling distributions, every one normalised ``sum_k g_k^2 = g^2``
-(same total coupling) and folded **strongest-first** (descending ``g_k``) so the
-critical-``L`` and ``x`` are comparable across them:
+We test several coupling distributions, every one normalised ``sum_k g_k^2 = g^2``
+(same total coupling).  ``linear``/``uniform``/``exp``/``random`` are sorted descending,
+so folding the first ``L`` is **strongest-first** and the critical-``L`` and ``x`` are
+comparable across them.  ``ou`` is deliberately **left in generation order** (sorting
+would destroy its sequential correlation), so for ``ou`` "first ``L``" is NOT
+strongest-first -- read its curves accordingly:
 
   linear   g_k = g * sqrt(6K/(2K^2+3K+1)) * (K+1-k)/K   (paper)
   uniform  g_k = g / sqrt(K)                            (flat -- x = 1/L exactly)
@@ -45,6 +48,7 @@ from pathlib import Path
 
 import numpy as np
 
+from edmtn.driver.auto_config import SolverConfig  # noqa: E402
 from edmtn.evolution.quimb_edm import QuimbEDM  # noqa: E402
 from edmtn.evolution.separable_bath import SeparableBathEvolution  # noqa: E402
 from edmtn.expansion.first_order import FirstOrderExpander  # noqa: E402
@@ -108,7 +112,9 @@ def fold_snapshots(model, *, T, eps, order, cutoff, cutoff_mode, max_bond,
     ev = SeparableBathEvolution(expander=expander, compress_method=method,
                                 compress_decomp=decomp, compress_decomp_q=decomp_q)
     d, d_phys, K = model.system_dim, ke.d_phys, ke.K
-    n_steps = int(round(T / eps))
+    # T/eps must be an exact positive integer -- reuse the driver's validated grid rather
+    # than silently rounding (SolverConfig raises ValueError on a non-integral ratio)
+    n_steps = SolverConfig(eps=eps, T=T).n_steps
     n_sites = order * n_steps
     rho0 = model.initial_system_state().reshape(-1).astype(np.complex128)
     if device == "gpu":

@@ -111,7 +111,8 @@ def test_intermediate_subbath_matches_partial_bath(order):
 
 
 class _SubModel:
-    """View of a Gaudin model restricted to its first ``L`` (strongest) sub-baths."""
+    """View of a Gaudin model restricted to its first ``L`` sub-baths in STORED order
+    (strongest-first only because this test uses the sorted default `linear` profile)."""
 
     def __init__(self, model, L):
         self._couplings = model.couplings[:L]

@@ -12,7 +12,12 @@ from ``compress_opts['method']`` and their canonicalisation QR from
   *single-pass*.  A **silent resolution guard** runs automatically: rSVD uses quimb's
   adaptive (``adapt+block``) mode so the rank grows until the cutoff resolves inside
   the computed spectrum, and any failure / under-resolution / non-NumPy backend falls
-  back to the exact full SVD -- so the result is never less reliable than full SVD.
+  back to the exact full SVD.  The guard covers the failure modes it detects, but rSVD
+  remains a *randomized* algorithm -- treat measured agreement with full SVD as a
+  benchmark result at stated tolerances, not a universal guarantee.  It also cannot
+  report a truncation metric: the sketch never forms the tail of the spectrum it
+  omitted, so ``truncation_errors`` is ``None`` under ``rsvd`` (P1-15) -- which means
+  "unmeasurable", NOT "nothing was discarded".
 * **canonicalisation** -- ``'quimb'`` (quimb's default QR), ``'householder'``
   (``'qr'``), or ``'cholqr'`` (``'qr:cholesky'``, single-pass Cholesky QR).
 

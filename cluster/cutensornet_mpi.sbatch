@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# LEGACY RECIPE (Phase-C0 MPI probe, kept for reference). Its `srun --mpi=pmi2` launch
+# matched the cluster as configured in 2026-06 and is NOT currently working:
+# the site's CUDA-aware MPI stack has since regressed. Use
+# cluster/test_gpu_hpc.sbatch for the current test recipe + status record.
 # Phase C0 — cuTensorNet multi-GPU (MPI) distributed contraction de-risk, c1 / 4×A800.
 #   sbatch --parsable cluster/cutensornet_mpi.sbatch
 # Prereq: env `edmtn-gpu` has mpi4py + the built MPI wrapper

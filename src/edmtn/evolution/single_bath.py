@@ -7,8 +7,11 @@ Implements the forward recursive construction of the EDM tensor network
 2. build the system superoperators ``S^{phi}(t)`` (Layer 4b);
 3. apply the kernel + new superoperator, growing the EDM-MPS by one site
    (:func:`~edmtn.evolution.mps_utils.apply_step`, Eq. 8);
-4. recompress the enlarged bonds by an SVD sweep (Layer 4a), using the EDM
-   paper's truncation rule ``discard s_i / s_{d**2+1} <= xi``.
+4. recompress the enlarged bonds by a quimb compression sweep (Layer 4a) under the
+   configured ``cutoff`` / ``cutoff_mode`` (default the quimb-native ``'rel'``:
+   discard ``s_i / s_max <= cutoff``).  The paper's custom ``rel_ref`` rule
+   (``s_i / s_{d**2+1}``) is retired.  Step 4 is skipped entirely when
+   ``compress=False``.
 
 The reduced density matrix ``rho(t)`` is recovered after each complete physical
 step by closing the open arms with ``delta^0``.
@@ -122,15 +125,21 @@ class SingleBathEvolution:
             Time step.
         n_steps : int
             Number of physical steps to evolve.
-        max_bond, cutoff, cutoff_mode, ref_index :
-            Truncation controls passed to the compression strategy.  The default
-            ``cutoff_mode='rel_ref'`` with ``ref_index = d**2`` reproduces the
-            paper's rule.  ``cutoff = 0`` keeps every singular value (exact).
+        max_bond, cutoff, cutoff_mode :
+            Truncation controls passed to the compression sweep.  ``cutoff_mode``
+            defaults to the quimb-native ``'rel'`` (``s_i / s_max <= cutoff``).  The paper's
+            custom ``rel_ref`` rule -- and the reference-index parameter it needed --
+            are retired; no such argument exists.
+            ``cutoff = 0`` with ``compress=True`` keeps every singular value (an exact
+            canonicalise + full-SVD recompression), which is NOT the same as
+            ``compress=False`` (no compression at all).
         record_rho : bool
             Store ``rho(t)`` at every step.
         compress : bool
-            If ``False``, skip the SVD sweep (exact, exponential bonds; for
-            small-``t`` reference checks).
+            If ``False``, genuinely SKIP the compression sweep -- exact, with
+            exponentially growing bonds (small-``t`` reference checks).  ``True``
+            compresses each step: with ``cutoff=0`` an exact canonicalise + full-SVD
+            recompression, with ``cutoff>0`` (or a ``max_bond``) a truncating one.
         convert : callable, optional
             Applied to every array fed into the MPS (initial state, kernel sites,
             system superoperators).  Use it to move the computation onto another
@@ -180,7 +189,8 @@ class SingleBathEvolution:
                 ksites = [convert(k) for k in kernel_engine.get_kernel_mpo(g).site_tensors]
                 mps = mps.step(ksites, families[sub], d)
                 if compress and mps.num_sites > 1:
-                    # exact step (compress=False) is reproduced by a zero cutoff
+                    # compress=False skips this entirely (exact, exponentially growing
+                    # bonds); it is NOT a zero-cutoff compression
                     mps = mps.compress(
                         cutoff=cutoff if compress else 0.0,
                         cutoff_mode=cutoff_mode,
