@@ -1,11 +1,10 @@
 """Pipeline auto-configuration (Layer 7).
 
 Selects and constructs the engine stack (cumulant -> kernel -> expansion ->
-decomposition -> evolution) from a model's ``bath_type``.  Pipelines are kept in
-a small registry so future bath types (``separable``, ``chain``) slot in without
-touching the driver.
-
-Phase 1 ships the ``gaussian`` pipeline only.
+decomposition -> evolution) from a model's ``bath_type``.  Two pipelines are
+built in and registered on import: ``gaussian`` (spin-boson) and ``separable``
+(Gaudin).  Pipelines are kept in a small registry so a future bath type
+(e.g. ``chain``) slots in without touching the driver.
 """
 
 from __future__ import annotations

@@ -120,7 +120,8 @@ _CURRENT_DOCS = ["README.md", "docs/guides/recommended-config.md",
                  "docs/guide/solving.md", "docs/guide/results.md",
                  "docs/guide/compression.md", "docs/guide/backends.md",
                  "docs/guide/convergence.md", "docs/guide/performance.md",
-                 "docs/guide/cluster.md"]
+                 "docs/guide/cluster.md",
+                 "docs/developer/architecture.md", "docs/developer/testing.md"]
 
 _STALE = [
     (r"backend='auto'", "backend 'auto' was removed; the default is 'cpu'"),
@@ -411,6 +412,49 @@ def test_readme_paper_scale_matches_the_reproduce_scripts():
     assert "`cutoff=1e-5`" in README          # fig4's recorded default
     assert "`cutoff=1e-6`" in README          # fig6's recorded default
     assert "illustrative" in README           # the tighter-cutoff Gaudin block is labelled
+
+
+def test_architecture_page_states_the_rules_honestly():
+    text = " ".join((ROOT / "docs/developer/architecture.md")
+                    .read_text(encoding="utf-8").split())
+    assert "lower layers never import" in text            # the layering rule
+    assert "free of any `cuquantum` import" in text       # Track-1 portability
+    assert "first-class options" in text                  # the preferred mechanisms ...
+    assert "compatibility shim, not a recommended extension" in text  # ... and the one exception
+    assert "**not** that acceleration is active" in text  # Ozaki enabled == capability only
+    assert "plain backend matmul" in text                 # gemm() today is A @ B
+    assert "**raises** `NotImplementedError` on a multi-node layout by default" in text
+    assert "opts in with a warning" in text               # EDMTN_ALLOW_MULTINODE semantics
+    assert "a reservation, not an implementation" in text  # ProcessGroup stays honest
+
+
+def test_testing_page_matches_the_pytest_contract():
+    text = " ".join((ROOT / "docs/developer/testing.md")
+                    .read_text(encoding="utf-8").split())
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for marker in ("integration", "gpu", "cuquantum", "multigpu"):
+        assert marker in text, marker
+        assert marker in pyproject, marker                # markers really exist
+    assert "**not collected**" in text                    # perf_*.py run directly
+    assert "-m integration" in text
+    assert "--require-multigpu=N" in text
+    assert "EDMTN_MULTIGPU_RESULT" in text
+    assert "cannot masquerade as hardware validation" in text
+    # the docs-contract guard's own scope stays honest: only the small CPU examples run
+    assert "hand-mirrored, not the paper-scale or GPU/HPC blocks" in text
+    # entry validation is an enumerated contract, not a claim about every public object
+    assert "The validated entry points" in text
+
+
+def test_pipeline_registry_and_module_docstring_are_current():
+    from edmtn.driver import available_pipelines
+    from edmtn.driver import auto_config as _auto_config
+    assert {"gaussian", "separable"} <= set(available_pipelines())
+    doc = _auto_config.__doc__ or ""
+    assert "Phase 1" not in doc                          # the old phase note is gone
+    assert "pipeline only" not in doc                    # no gaussian-only claim
+    assert "``separable``" in doc                        # separable is built in, and
+    assert "future bath type" in doc                     # the registry stays the seam
 
 
 def test_model_docstrings_state_ranges_and_capability_boundaries():
