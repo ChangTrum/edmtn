@@ -24,6 +24,7 @@ from __future__ import annotations
 
 _RSVD_STATE = {"q": 2}  # power iterations for the 'edm_rsvd' driver (set per solve)
 _REGISTERED = {"done": False}
+_EIGH_METRIC_REGISTERED = {"done": False}
 
 _CANON_METHOD = {"quimb": None, "householder": "qr", "cholqr": "qr:cholesky"}
 
@@ -74,6 +75,59 @@ def _register_edm_rsvd() -> None:
         return U, s, VH
 
     _REGISTERED["done"] = True
+
+
+def register_eigh_metric_driver() -> str:
+    """Register + return the name of an ``eigh`` split driver that reports the TRUE
+    discarded weight (P1-15).
+
+    The ``dm`` compress path splits the reduced density matrix, whose eigenvalues are
+    ``lambda_i = sigma_i**2``.  The standard discarded weight is therefore
+    ``sum(lambda_discarded)``; quimb's built-in ``eigh`` driver only offers the SVD-style
+    ``info["error"] = sqrt(sum(lambda_discarded**2))``, whose square would be
+    ``sum(sigma**4)`` -- a DIFFERENT quantity that must not be reported under the same
+    name.  (The built-in driver also does not accept ``info`` at all.)
+
+    This mirrors quimb's ``eigh_truncated`` exactly -- same eigendecomposition, ordering,
+    positive-clip, ``cutoff_mode`` / ``max_bond`` / ``absorb`` trimming (it calls quimb's own
+    ``_trim_and_renorm_svd_result``) -- so the compressed tensors match the built-in path to
+    numerical tolerance; it only ADDS ``info["discarded_weight"] = sum(clip(lambda_discarded, 0, inf))``,
+    derived from the rank actually kept.
+    """
+    if _EIGH_METRIC_REGISTERED["done"]:
+        return "edm_eigh_metric"
+    from quimb.tensor import decomp  # noqa: PLC0415
+
+    @decomp.register_split_driver("edm_eigh_metric")
+    def edm_eigh_metric(x, cutoff=-1.0, cutoff_mode=decomp.cutoff_mode_rsum2,
+                        max_bond=-1, absorb=decomp.get_Usq_sqVH, renorm=0,
+                        positive=0, info=None):
+        xp = decomp.get_namespace(x)
+        s, U = xp.linalg.eigh(x)
+        if not positive:  # order by |lambda| descending, exactly as quimb does
+            idx = xp.argsort(-xp.abs(s), axis=-1)
+            s = xp.take_along_axis(s, idx, axis=-1)
+            U = xp.take_along_axis(U, idx[..., None, :], axis=-1)
+        else:             # assumed positive -> just reverse; clip tiny negatives for sqrt
+            s = xp.flip(s, axis=-1)
+            U = xp.flip(U, axis=-1)
+            if absorb in (decomp.get_Usq_sqVH, decomp.get_Usq, decomp.get_sqVH):
+                s = xp.clip(s, 0.0, None)
+        VH = xp.conj(xp.swapaxes(U, -2, -1))
+        lam = s  # the ordered eigenvalues, before trimming
+        out = decomp._trim_and_renorm_svd_result(
+            U, s, VH, cutoff, cutoff_mode, max_bond, absorb, renorm,
+            use_abs=not positive, xp=xp)
+        if info is not None:
+            # the kept rank is the bond dimension of the returned left factor; everything
+            # beyond it was discarded.  Negative numerical noise is clipped away.
+            n_keep = out[0].shape[-1]
+            discarded = lam[..., n_keep:]
+            info["discarded_weight"] = xp.sum(xp.clip(discarded, 0.0, None), axis=-1)
+        return out
+
+    _EIGH_METRIC_REGISTERED["done"] = True
+    return "edm_eigh_metric"
 
 
 def compress_opts_for(decomp_mode: str, q: int):

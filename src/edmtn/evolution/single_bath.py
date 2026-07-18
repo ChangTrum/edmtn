@@ -55,8 +55,14 @@ class EvolutionResult:
     density_matrices : list[ndarray] or None
         ``rho(t)`` at each step if ``record_rho`` was set.
     truncation_errors : list[float | None]
-        One entry per physical time step; each value is None because discarded weight
-        is not currently measured.
+        One entry per **physical time step** (so ``len == len(times)``, also for order 2,
+        where it is the max over BOTH sub-steps): the largest per-bond **discarded weight**
+        ``max_b sum_{i discarded at bond b} sigma_i**2`` of the compressions run in that
+        step.  This is the discarded WEIGHT, not quimb's discarded 2-norm (``error``), and
+        it is a per-step local quantity, NOT a cumulative error bound.  ``0.0`` means a
+        compression ran and discarded nothing (or none ran at all); ``None`` means the
+        chosen decomposition cannot measure it exactly (``compress_decomp='rsvd'``, whose
+        randomized sketch never sees the omitted tail of the spectrum).
     """
 
     mps: object
@@ -165,6 +171,10 @@ class SingleBathEvolution:
         for n in range(1, n_steps + 1):
             t_phys = n * eps
             families = [convert(f) for f in self.expander.build_at(model, t_phys, eps).families]
+            # largest per-bond discarded weight over THIS physical step; for order 2 that
+            # spans both sub-steps, so the axis stays one entry per physical time step.
+            # None (unmeasurable, e.g. rsvd) from any executed compression wins.
+            step_weight: float | None = 0.0
             for sub in range(order):  # S_1 then S_2 for order 2; single for order 1
                 g += 1
                 ksites = [convert(k) for k in kernel_engine.get_kernel_mpo(g).site_tensors]
@@ -180,11 +190,16 @@ class SingleBathEvolution:
                         decomp_q=self.compress_decomp_q,
                         canon=self.compress_canon,
                     )
+                    w = mps.max_discarded_weight
+                    if w is None:
+                        step_weight = None
+                    elif step_weight is not None:
+                        step_weight = max(step_weight, w)
 
             # record after the complete physical step
             result.times.append(t_phys)
             result.bond_dims.append(mps.max_bond)
-            result.truncation_errors.append(None)  # discarded weight not measured (P0-9 phase 1)
+            result.truncation_errors.append(step_weight)
             if record_rho:
                 result.density_matrices.append(mps.reduced_density_matrix())
 

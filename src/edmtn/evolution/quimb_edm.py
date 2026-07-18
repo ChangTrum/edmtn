@@ -36,7 +36,62 @@ identical to the native path while removing the custom container.
 
 from __future__ import annotations
 
+import math
+
 from .mps_utils import EDMMPS
+
+
+def _max_scalar(value) -> float:
+    """Backend-safe max of a scalar / 0-d / batched array as a Python float.
+
+    Never routes a CuPy array through ``np.asarray`` (implicit device->host is forbidden):
+    the batch max is taken on the value's OWN backend, then ``.item()`` brings the single
+    scalar across.
+    """
+    if getattr(value, "shape", ()):          # a real array -> reduce on its own backend
+        value = value.max()
+    item = getattr(value, "item", None)
+    return float(item()) if item is not None else float(value)
+
+
+class _TruncationAccumulator(dict):
+    """Per-``compress()`` accumulator of the largest per-bond discarded weight (P1-15).
+
+    quimb writes its truncation metric into the SAME ``info`` dict once per bond split,
+    overwriting the key each time, so the only way to see every bond is to intercept
+    ``__setitem__``.  Two keys are understood:
+
+    * ``"error"``            -- quimb's exact-SVD discarded 2-norm ``sqrt(sum sigma**2)``,
+      so the discarded WEIGHT is ``error**2``;
+    * ``"discarded_weight"`` -- our ``edm_eigh_metric`` adapter's ``sum(clip(lambda, 0, inf))``,
+      which is already a weight (the dm path's eigenvalues are ``lambda = sigma**2``).
+
+    A fresh instance is created per compress call -- there is no module-level or shared
+    state, so two accumulators can never contaminate each other.  ``info`` must be
+    pre-seeded with the key, because quimb only computes opt-in extras
+    (``parse_info_extras``).
+    """
+
+    _KEYS = ("error", "discarded_weight")
+
+    def __init__(self, key: str = "error"):
+        super().__init__()
+        dict.__setitem__(self, key, None)  # pre-seed: opt in to quimb computing it
+        self.max_weight = 0.0
+        self.n_splits = 0
+
+    def __setitem__(self, key, value):
+        dict.__setitem__(self, key, value)
+        if value is None or key not in self._KEYS:
+            return
+        v = _max_scalar(value)
+        weight = v * v if key == "error" else v   # error is a 2-norm; the other is a weight
+        if not math.isfinite(weight) or weight < 0.0:
+            raise FloatingPointError(
+                f"non-finite/negative truncation metric from quimb ({key}={value!r})")
+        if weight > self.max_weight:
+            self.max_weight = weight
+        self.n_splits += 1
 
 
 class QuimbEDM:
@@ -48,13 +103,18 @@ class QuimbEDM:
     :meth:`fold` (fold_raw + :meth:`compress`, kept for back-compat).
     """
 
-    def __init__(self, tn, n, d, d_phys, rho0_vec, meta=None):
+    def __init__(self, tn, n, d, d_phys, rho0_vec, meta=None, max_discarded_weight=0.0):
         self.tn = tn
         self.n = n
         self.d = d
         self.d_phys = d_phys
         self.rho0_vec = rho0_vec
         self.meta = dict(meta or {})
+        #: Largest per-bond discarded weight (``sum sigma**2``) of the SINGLE compression
+        #: sweep that produced this object -- NOT a cumulative or global error bound for the
+        #: whole evolution.  ``0.0`` when no compression ran or nothing was discarded;
+        #: ``None`` when the chosen decomposition cannot measure it exactly (``rsvd``).
+        self.max_discarded_weight: float | None = max_discarded_weight
 
     # -- construction ------------------------------------------------------
 
@@ -141,26 +201,54 @@ class QuimbEDM:
         """
         import quimb.tensor as qtn  # noqa: PLC0415
 
-        if self.n <= 1:
-            return self
+        if self.n <= 1:  # nothing to compress -> a genuine zero, not a stale inherited value
+            return QuimbEDM(self.tn, self.n, self.d, self.d_phys, self.rho0_vec,
+                            meta=self.meta, max_discarded_weight=0.0)
         from ..backend.quimb_linalg import apply_quimb_cupy_compat  # noqa: PLC0415
-        from .quimb_decomp import compress_opts_for, canonize_opts_for  # noqa: PLC0415
+        from .quimb_decomp import (  # noqa: PLC0415
+            canonize_opts_for, compress_opts_for, register_eigh_metric_driver)
 
         apply_quimb_cupy_compat()  # make quimb/autoray safe on CuPy-backed tensors
         # only forward the opts when non-default: an empty dict is still passed
         # through to the per-method split, and 'dm' (eigh) rejects canonize_opts
         opts = {}
-        copts = compress_opts_for(decomp, decomp_q)
-        if copts:
-            opts["compress_opts"] = copts
+        copts = dict(compress_opts_for(decomp, decomp_q))
         canopts = canonize_opts_for(canon)
         if canopts:
             opts["canonize_opts"] = canopts
+
+        # -- truncation metric: each 1D-compress method reaches tensor_split by a DIFFERENT
+        #    route, so the accumulator has to be injected three different ways (verified
+        #    against quimb 1.14; do NOT merge these branches):
+        #      * zipup  -> calls `C.split(**compress_opts)` directly      => TOP-LEVEL info
+        #      * direct -> goes via compress_between/tensor_compress_bond, which consumes its
+        #                  own top-level `info` (singular_values only) and forwards only the
+        #                  INNER compress_opts to the split  => NESTED compress_opts={"info":...}
+        #      * dm     -> calls `rhoi.split(**compress_opts)` directly, but quimb's built-in
+        #                  eigh driver takes no `info`, so it needs our adapter => TOP-LEVEL info
+        #    rSVD is deliberately NOT measured: rand_linalg.rsvd never sees the tail of the
+        #    spectrum it omitted, so any "error" it could report would silently under-count.
+        acc = None
+        if decomp == "exact":
+            if method == "dm":
+                copts["method"] = register_eigh_metric_driver()
+                acc = _TruncationAccumulator("discarded_weight")
+                copts["info"] = acc
+            elif method == "zipup":
+                acc = _TruncationAccumulator("error")
+                copts["info"] = acc
+            elif method == "direct":
+                acc = _TruncationAccumulator("error")
+                copts["compress_opts"] = {"info": acc}
+        if copts:
+            opts["compress_opts"] = copts
+
         cq = qtn.tensor_network_1d_compress(
             self.tn, max_bond=max_bond, cutoff=cutoff, method=method,
             site_tags=[f"I{p}" for p in range(self.n)], permute_arrays=False,
             cutoff_mode=cutoff_mode, optimize="auto", **opts)
-        return QuimbEDM(cq, self.n, self.d, self.d_phys, self.rho0_vec, meta=self.meta)
+        return QuimbEDM(cq, self.n, self.d, self.d_phys, self.rho0_vec, meta=self.meta,
+                        max_discarded_weight=(acc.max_weight if acc is not None else None))
 
     # -- single-bath step (one new time-site, Eq. 8) -----------------------
 

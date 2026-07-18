@@ -64,8 +64,14 @@ class SeparableEvolutionResult:
     density_matrices : list[ndarray] or None
         ``rho_L(T)`` at each recorded ``L`` (if ``record_rho``).
     truncation_errors : list[float | None]
-        One entry per recorded sub-bath count ``L``; each value is None because discarded
-        weight is not currently measured.
+        One entry per **recorded sub-bath count** ``L`` (so ``len == len(recorded_L)``): the
+        largest per-bond **discarded weight** ``max_b sum_{i discarded at bond b} sigma_i**2``
+        over every fold since the PREVIOUS recorded ``L`` up to this one -- so a
+        ``record_every > 1`` never silently drops the un-recorded folds' truncation.  This is
+        the discarded WEIGHT, not quimb's discarded 2-norm (``error``), and it is a local
+        per-interval quantity, NOT a cumulative error bound.  ``0.0`` means compression ran
+        and discarded nothing (or ``compress=False``); ``None`` means the chosen
+        decomposition cannot measure it exactly (``compress_decomp='rsvd'``).
     """
 
     mps: object
@@ -195,6 +201,7 @@ class SeparableBathEvolution:
         if record_rho:
             result.density_matrices = []
 
+        interval_weight: float | None = 0.0  # max discarded weight since the last recorded L
         for k in range(n_fold):
             mpo_sites = [
                 convert(s) for s in kernel_engine.for_sub_bath(k).get_kernel_mpo(n_sites).site_tensors
@@ -210,6 +217,13 @@ class SeparableBathEvolution:
                     decomp_q=self.compress_decomp_q,
                     canon=self.compress_canon,
                 )
+                # accumulate across the WHOLE interval since the last recorded L, so a
+                # record_every > 1 cannot silently drop the un-recorded folds' truncation
+                w = mps.max_discarded_weight
+                if w is None:
+                    interval_weight = None
+                elif interval_weight is not None:
+                    interval_weight = max(interval_weight, w)
 
             # release the previous sub-bath's GPU intermediates (no-op on CPU)
             if memory is not None:
@@ -219,7 +233,8 @@ class SeparableBathEvolution:
             if L == n_fold or (L % record_every == 0):
                 result.recorded_L.append(L)
                 result.bond_dims.append(mps.max_bond)
-                result.truncation_errors.append(None)  # discarded weight not measured (P0-9 phase 1)
+                result.truncation_errors.append(interval_weight)
+                interval_weight = 0.0  # start a fresh interval for the next recorded L
                 if record_rho:
                     result.density_matrices.append(mps.reduced_density_matrix())
 

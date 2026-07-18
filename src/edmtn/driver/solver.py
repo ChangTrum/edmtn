@@ -64,10 +64,17 @@ class SolverResult:
         ``sub_bath_bond_dims``; Track 2 = ``[]`` (no boundary-MPS bond history).  Prefer the
         axis-explicit fields above for new code.
     truncation_errors : list[float | None]
-        Pipeline-aligned placeholders: per physical time step for single-bath Track 1, per
-        recorded sub-bath count for separable Track 1.  Values are None because truncation
-        loss is not currently measured; Track 2 returns an empty list because it performs no
-        truncation.
+        Largest per-bond **discarded weight** -- ``max_b sum_{i discarded at bond b} sigma_i**2``
+        -- of each recorded compression, on the pipeline's own axis: per physical time step for
+        single-bath Track 1 (order 2 takes the max over both sub-steps, so it stays aligned with
+        ``times``), and per recorded sub-bath count ``L`` for separable Track 1 (the max over every
+        fold since the previous recorded ``L``, so a ``record_every > 1`` drops nothing).  This is
+        the discarded WEIGHT, NOT quimb's discarded 2-norm (``sqrt(sum sigma**2)``), and it is a
+        LOCAL per-record quantity -- not a cumulative or global error bound for the trajectory.
+        ``0.0`` = a compression ran and discarded nothing (or none ran, e.g. ``compress=False``);
+        ``None`` = the chosen decomposition cannot measure it exactly (``compress_decomp='rsvd'``,
+        whose randomized sketch never sees the tail of the spectrum it omitted).  Track 2 returns
+        ``[]`` -- it is exact-only and performs no truncation.
     expansion_order : int
         The resolved Trotter order actually used (``1`` or ``2``).
     observables : dict[str, ndarray]
