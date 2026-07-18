@@ -221,7 +221,7 @@ immutable afterwards (use `dataclasses.replace` for a variant).
 | `compress_decomp` | `exact`, `rsvd` (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + guard). *Track 1 only* |
 | `compress_decomp_q` | int ≥ 0 (`2`) | rSVD power iterations (`2` = cold, `0` = single-pass). *Track 1 only* |
 | `compress_canon` | `quimb`, `householder`, `cholqr` (`quimb`) | canonicalisation QR. *Track 1 only* |
-| `preset` | `balanced`, `robust`, `None` (`None`) | only fills `compress_decomp`/`compress_decomp_q` when left at defaults; Track 1 only. An unknown name is rejected on every backend |
+| `preset` | `balanced`, `robust`, `None` (`None`) | Track 1 only. Applies while `compress_decomp` is still `exact`: sets `compress_decomp='rsvd'` **and overwrites `compress_decomp_q`** (an explicitly passed `q` included); an explicit `compress_decomp='rsvd'` prevents it from changing either field. An unknown name is rejected on every backend |
 | `sub_baths` | int > 0 or `None` (`None`) | separable: fold only the first `L` sub-baths **in the model's stored coupling order** (Fig. 6). Re-checked as `1 ≤ L ≤ K` once `K` is known — never silently clamped |
 | `backend` | `cpu`, `numpy`, `gpu`, `cupy`, `hpc` (**`cpu`**) | `cpu`/`numpy` and `gpu`/`cupy` = Track 1; `hpc` = Track 2. There is **no `auto`** |
 | `precision` | `f64`, `mixed` (`f64`) | **experimental.** `mixed` casts the Track-1 contraction tensors to the f32/complex64 path. A separate f64 re-cast before decomposition is *declared* by `PrecisionPolicy` but is **not wired into the solve pipeline**, and the end-to-end mixed-precision check is still skipped — so treat results as unvalidated |
@@ -338,7 +338,9 @@ res = solve(g, T=0.3, eps=0.1, expansion_order=2, cutoff=1e-8, max_bond=64,
 
 Both presets only set `compress_decomp='rsvd'` plus `compress_decomp_q` (`0` / `2`) —
 neither is full SVD, neither touches `compress_canon`, and neither overrides `backend`.
-They apply only when you left those fields at their defaults, and only on Track 1. If you
+The trigger is `compress_decomp == 'exact'` alone (Track 1 only): a preset then overwrites
+`compress_decomp_q` even if you passed a `q` explicitly, while an explicit
+`compress_decomp='rsvd'` prevents it from changing either compression field. If you
 want full SVD, set `compress_decomp='exact'` (the API default) and use no preset. Accuracy
 figures quoted in the guide are **measured on specific hardware and parameters**, not
 general error guarantees.

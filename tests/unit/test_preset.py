@@ -1,9 +1,12 @@
 """Strategy-preset tests: SolverConfig(preset=...) wiring.
 
 ``preset`` fills the recommended compression decomposition (docs/recommended-
-config.md) without overriding an explicit choice; default (None) keeps the exact
-full-SVD behaviour.  Both presets use quimb rSVD, differing only in power
-iterations (balanced = single-pass q=0, robust = cold q=2).
+config.md).  The trigger is ``compress_decomp == 'exact'`` alone: while it holds,
+a preset overwrites ``compress_decomp_q`` too -- an explicitly passed ``q``
+included; an explicit ``compress_decomp='rsvd'`` prevents the preset from
+changing either compression field.  Default (None) keeps the exact full-SVD
+behaviour.  Both presets use quimb rSVD, differing only in power iterations
+(balanced = single-pass q=0, robust = cold q=2).
 """
 
 from __future__ import annotations

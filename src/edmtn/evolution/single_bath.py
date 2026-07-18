@@ -60,8 +60,11 @@ class EvolutionResult:
     truncation_errors : list[float | None]
         One entry per **physical time step** (so ``len == len(times)``, also for order 2,
         where it is the max over BOTH sub-steps): the largest per-bond **discarded weight**
-        ``max_b sum_{i discarded at bond b} sigma_i**2`` of the compressions run in that
-        step.  This is the discarded WEIGHT, not quimb's discarded 2-norm (``error``), and
+        of each physical time-step record -- ``max_b sum_{i discarded at bond b} sigma_i**2``
+        on the ``zipup``/``direct`` exact paths, ``max_b sum_{i discarded at bond b} lambda_i``
+        of the discarded density-matrix eigenvalues (``lambda_i = sigma_i**2``, NOT
+        ``lambda_i**2``) on the ``dm`` path.  This is the discarded WEIGHT, not quimb's
+        discarded 2-norm (``error``), and
         it is a per-step local quantity, NOT a cumulative error bound.  ``0.0`` means a
         compression ran and discarded nothing (or none ran at all); ``None`` means the
         chosen decomposition cannot measure it exactly (``compress_decomp='rsvd'``, whose

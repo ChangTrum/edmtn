@@ -8,5 +8,9 @@ per-object contracts.
 ```{toctree}
 :maxdepth: 1
 
+concepts
+models
+solving
+results
 ../guides/recommended-config
 ```

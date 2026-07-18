@@ -65,7 +65,10 @@ class SeparableEvolutionResult:
         ``rho_L(T)`` at each recorded ``L`` (if ``record_rho``).
     truncation_errors : list[float | None]
         One entry per **recorded sub-bath count** ``L`` (so ``len == len(recorded_L)``): the
-        largest per-bond **discarded weight** ``max_b sum_{i discarded at bond b} sigma_i**2``
+        largest per-bond **discarded weight** of each recorded fold interval --
+        ``max_b sum_{i discarded at bond b} sigma_i**2`` on the ``zipup``/``direct`` exact
+        paths, ``max_b sum_{i discarded at bond b} lambda_i`` of the discarded density-matrix
+        eigenvalues (``lambda_i = sigma_i**2``, NOT ``lambda_i**2``) on the ``dm`` path --
         over every fold since the PREVIOUS recorded ``L`` up to this one -- so a
         ``record_every > 1`` never silently drops the un-recorded folds' truncation.  This is
         the discarded WEIGHT, not quimb's discarded 2-norm (``error``), and it is a local

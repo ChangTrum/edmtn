@@ -64,8 +64,11 @@ class SolverResult:
         ``sub_bath_bond_dims``; Track 2 = ``[]`` (no boundary-MPS bond history).  Prefer the
         axis-explicit fields above for new code.
     truncation_errors : list[float | None]
-        Largest per-bond **discarded weight** -- ``max_b sum_{i discarded at bond b} sigma_i**2``
-        -- of each recorded compression, on the pipeline's own axis: per physical time step for
+        Largest per-bond **discarded weight** of each public record -- measured as
+        ``max_b sum_{i discarded at bond b} sigma_i**2`` on the ``zipup``/``direct`` exact
+        paths, and as ``max_b sum_{i discarded at bond b} lambda_i`` of the discarded
+        density-matrix eigenvalues (``lambda_i = sigma_i**2``, summed directly, NOT
+        ``lambda_i**2``) on the ``dm`` path -- on the pipeline's own axis: per physical time step for
         single-bath Track 1 (order 2 takes the max over both sub-steps, so it stays aligned with
         ``times``), and per recorded sub-bath count ``L`` for separable Track 1 (the max over every
         fold since the previous recorded ``L``, so a ``record_every > 1`` drops nothing).  This is

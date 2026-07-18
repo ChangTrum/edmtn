@@ -110,10 +110,13 @@ class QuimbEDM:
         self.d_phys = d_phys
         self.rho0_vec = rho0_vec
         self.meta = dict(meta or {})
-        #: Largest per-bond discarded weight (``sum sigma**2``) of the SINGLE compression
-        #: sweep that produced this object -- NOT a cumulative or global error bound for the
-        #: whole evolution.  ``0.0`` when no compression ran or nothing was discarded;
-        #: ``None`` when the chosen decomposition cannot measure it exactly (``rsvd``).
+        #: Largest per-bond discarded weight of the SINGLE compression sweep that produced
+        #: this object -- ``max_b sum sigma_i**2`` on the ``zipup``/``direct`` exact paths,
+        #: ``max_b sum lambda_i`` of the discarded density-matrix eigenvalues
+        #: (``lambda_i = sigma_i**2``) on the ``dm`` path.  NOT a cumulative or global
+        #: error bound for the whole evolution.  ``0.0`` when no compression ran or nothing
+        #: was discarded; ``None`` when the chosen decomposition cannot measure it exactly
+        #: (``rsvd``).
         self.max_discarded_weight: float | None = max_discarded_weight
 
     # -- construction ------------------------------------------------------

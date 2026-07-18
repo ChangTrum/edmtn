@@ -170,14 +170,20 @@ class SolverConfig:
         Store ``rho(t)`` at every step.  Strictly a ``bool``.  Note some paths record
         ``rho(t)`` regardless (second-order spin-boson, custom observables).
     precision : str
-        ``'f64'`` (default) or ``'mixed'`` (f32 contraction / f64 decompose).
+        ``'f64'`` (default) or ``'mixed'``.  ``'mixed'`` currently casts the Track-1
+        contraction tensors to the f32/complex64 path; the declared f64 decomposition
+        recast is NOT wired into the solve pipeline -- mixed precision remains
+        experimental and unvalidated.
     compress_method, compress_decomp, compress_decomp_q, compress_canon :
         quimb compression controls (see :mod:`edmtn.evolution.quimb_decomp`); all are
         Track-1 only -- ``hpc`` is exact-only and has no 1D-compress sweep.
     preset : str, optional
-        ``None`` (default), ``'balanced'`` or ``'robust'``; only fills
-        ``compress_decomp``/``compress_decomp_q`` when left at their defaults, and only on
-        Track 1.  An unknown name is rejected on every backend.
+        ``None`` (default), ``'balanced'`` or ``'robust'``; Track 1 only.  The trigger is
+        ``compress_decomp`` alone: while it is still ``'exact'`` (the default), the preset
+        sets ``compress_decomp = 'rsvd'`` AND overwrites ``compress_decomp_q`` with its own
+        value -- an explicitly passed ``q`` included.  An explicit ``compress_decomp='rsvd'``
+        prevents the preset from changing either compression field.  An unknown name is
+        rejected on every backend.
     sub_baths : int, optional
         Separable only: fold just the first ``L`` sub-baths **in the model's stored
         coupling order** (strongest-first only for the sorted named profiles).  Validated
@@ -208,7 +214,7 @@ class SolverConfig:
     preset: str | None = None  # None|'balanced'|'robust' (cpu/gpu only; see docs/guides/recommended-config.md)
     sub_baths: int | None = None  # separable only: fold the first L sub-baths in the model's stored coupling order (Fig. 6); None = all K
     backend: str = "cpu"   # 'cpu'|'gpu' -> numpy/cupy (Track 1); 'hpc' -> cuQuantum 2D contraction
-    precision: str = "f64"  # 'f64' | 'mixed' (mixed: f32 contraction, f64 decompose -- Phase 3/4)
+    precision: str = "f64"  # 'f64' | 'mixed' (f32 contraction only; f64 decompose recast NOT wired in -- experimental)
     # -- backend='hpc' only; ignored otherwise --
     pathfinder: str = "cuquantum"   # 'cuquantum' (default, cuTensorNet owns path) | 'cotengra'
     time_windows: int | None = None  # None = one-shot whole-spacetime; int = manual window blocking

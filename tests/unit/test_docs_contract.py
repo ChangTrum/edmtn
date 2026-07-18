@@ -115,13 +115,17 @@ _CURRENT_DOCS = ["README.md", "docs/guides/recommended-config.md",
                  # the Sphinx documentation's current-contract pages (historical
                  # design/research ledgers stay excluded)
                  "docs/index.md", "docs/guide/index.md", "docs/developer/index.md",
-                 "docs/getting-started/installation.md", "docs/getting-started/quickstart.md"]
+                 "docs/getting-started/installation.md", "docs/getting-started/quickstart.md",
+                 "docs/guide/concepts.md", "docs/guide/models.md",
+                 "docs/guide/solving.md", "docs/guide/results.md"]
 
 _STALE = [
     (r"backend='auto'", "backend 'auto' was removed; the default is 'cpu'"),
     (r"examples/studies/", "the directory is examples/research/"),
     (r"round\(T\s*/\s*eps\)", "T/eps must be an exact integer; it is not rounded"),
     (r"ref_index", "there is no ref_index field"),
+    (r"left (?:at|those fields at) (?:their )?defaults",
+     "presets never checked q; the trigger is compress_decomp == 'exact' alone"),
 ]
 
 
@@ -249,6 +253,70 @@ def test_installation_matches_distribution_and_packaging_contract():
     assert "not published on PyPI" in text
     assert "cupy-cuda12x" in text                      # GPU extra stays optional + explicit
     assert "cuquantum-python-cu12" in text             # hpc extra
+
+
+def test_concepts_separates_theorems_from_measurements():
+    text = (ROOT / "docs/guide/concepts.md").read_text(encoding="utf-8")
+    assert "arXiv:2509.00424" in text                  # the paper is cited, with its ID
+    assert "at most linearly" in text                  # the theorem bound, stated as a bound
+    assert "proved under its assumptions" in text      # theorem scope is explicit
+    assert "not** linear in `T`" in text               # runtime is NOT claimed linear
+    assert "not** an error" in text                    # cutoff is not an error bound
+
+
+def test_models_page_states_the_capability_boundaries():
+    text = (ROOT / "docs/guide/models.md").read_text(encoding="utf-8")
+    assert "NotImplementedError" in text               # both temperature limits are engine limits
+    assert "generation order" in text                  # ou is not sorted
+    assert "no sorting and no normalisation" in text   # custom arrays are verbatim
+    assert "read-only" in text                         # supplied arrays are copied + locked
+
+
+def test_solving_page_matches_the_config_contract():
+    text = (ROOT / "docs/guide/solving.md").read_text(encoding="utf-8")
+    assert "There is no `'auto'`" in text              # backend menu has no 'auto'
+    for mode in ("abs", "rel", "sum2", "rsum2", "sum1", "rsum1"):
+        assert f"`{mode}`" in text, mode               # the full cutoff_mode menu
+    assert "not wired into the solve\n  pipeline" in text or \
+           "not wired into the solve pipeline" in text  # mixed precision stays experimental
+    assert "reserved; must be `None`" in text          # time_windows
+    assert "never silently rounded" in text or "never silently clamped" in text
+
+
+def test_results_page_states_the_truncation_tristate():
+    text = (ROOT / "docs/guide/results.md").read_text(encoding="utf-8")
+    assert "the metric is defined" in text             # a number
+    assert "no discarded weight" in text               # 0.0, incl. skipped compression
+    assert "unmeasurable, not zero" in text            # rsvd -> None
+    assert "exact-only and performs no truncation" in text   # Track 2 -> []
+    assert "not a cumulative or global error" in text  # local per-record quantity
+    assert "legacy" in text                            # bond_dims/max_bond are aliases
+    # the dm path sums discarded density-matrix EIGENVALUES (lambda = sigma^2) ...
+    assert "`Σ lambda_i`" in text
+    assert "lambda_i = sigma_i²" in text
+    # ... directly -- it must never be described as summing their squares
+    assert "**not** `Σ lambda_i²`" in text
+
+
+def test_preset_overrides_follow_the_real_trigger():
+    """The preset trigger is ``compress_decomp == 'exact'`` ALONE: an explicitly
+    passed non-default q is still overwritten; an explicit 'rsvd' prevents the
+    preset from changing either compression field (docs/guide/solving.md)."""
+    c1 = SolverConfig(eps=0.1, T=0.3, preset="balanced", compress_decomp_q=7)
+    assert c1.compress_decomp == "rsvd"
+    assert c1.compress_decomp_q == 0                   # the explicit q=7 WAS overwritten
+    c2 = SolverConfig(eps=0.1, T=0.3, preset="balanced",
+                      compress_decomp="rsvd", compress_decomp_q=7)
+    assert c2.compress_decomp == "rsvd"
+    assert c2.compress_decomp_q == 7                   # explicit 'rsvd': neither field changed
+
+
+def test_preset_docs_state_the_overwrite_rule():
+    """README and the config guide must state that a triggered preset overwrites
+    even an explicitly passed q (the stale-claim scan bans the old wording)."""
+    assert "overwrites `compress_decomp_q`" in README
+    guide = (ROOT / "docs/guides/recommended-config.md").read_text(encoding="utf-8")
+    assert "explicitly passed `compress_decomp_q`" in guide.replace("\n> ", " ")
 
 
 def test_model_docstrings_state_ranges_and_capability_boundaries():

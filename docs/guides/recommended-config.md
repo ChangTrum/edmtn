@@ -4,6 +4,9 @@
 > SVD — and the only setting that can report a real truncation metric). The presets below are
 > *recommendations*; each one sets **only** `compress_decomp='rsvd'` plus `compress_decomp_q`
 > (`0` for `balanced`, `2` for `robust`) and never touches `compress_canon` or `backend`.
+> The trigger is `compress_decomp == 'exact'` alone: while it holds, a preset overwrites even
+> an explicitly passed `compress_decomp_q`; an explicit `compress_decomp='rsvd'` prevents the
+> preset from changing either compression field.
 > All numbers here are measurements on specific hardware/parameters, not error guarantees.
 
 
