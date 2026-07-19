@@ -98,7 +98,8 @@ from edmtn.kernels.separable_mpo import SeparableKernelEngine
 from edmtn.models import GaudinModel
 from edmtn.observables.extractor import ObservableExtractor
 
-_DIR_OUT = Path(__file__).resolve().parent / "data" / "gaudin_recompute"
+_DIR_OUT = Path(__file__).resolve().parent / "data" / "gaudin_scaling"
+_DIR_PICS = Path(__file__).resolve().parent / "pictures" / "gaudin_scaling"
 
 CHANNEL = 3       # coupling channel 3 = S_z (1-based contract)
 _ITEMSIZE = 16    # complex128
@@ -942,7 +943,7 @@ def run_replot(args) -> int:
         print("matplotlib not available; cannot replot")
         return 1
     outdir = Path(args.outdir)
-    picdir = outdir / "pictures"
+    picdir = Path(args.picdir)  # repo convention: pictures/<study>/ SIBLING of data/<study>/
     picdir.mkdir(parents=True, exist_ok=True)
     name = args.replot
     data = json.load(open(outdir / f"{name}.json"))
@@ -1274,6 +1275,8 @@ def build_parser():
                     help="evaluate the pre-registered acceptance gates; exit 3 on FAIL")
     ap.add_argument("--name", default="gaudin_scaling")
     ap.add_argument("--outdir", default=str(_DIR_OUT))
+    ap.add_argument("--picdir", default=str(_DIR_PICS),
+                    help="--replot figure directory (default: the pictures/ sibling)")
     ap.add_argument("--force", action="store_true", help="redo a completed configuration")
     ap.add_argument("--smoke", action="store_true", help="tiny fast config for validation")
     ap.add_argument("--check", action="store_true",
