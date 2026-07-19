@@ -51,6 +51,7 @@ developer/index
 :caption: Research records
 :maxdepth: 1
 
+research/gaudin-scaling-study
 research/coupling-scaling-law
 research/incremental-update-research
 ```

@@ -76,7 +76,12 @@ PYTHONPATH=src $RUN --pool g1_random_s0,g1_random_s1,g1_random_s2,g1_random_s3 \
 echo "G1 complete"
 
 # ---------------------------------------------------------------------------
-# G2 -- scale-up (SHELVED, user decision 2026-07-19: plan written, NOT executed).
+# G2 -- scale-up.  STATUS UPDATE 2026-07-19: EXECUTED after user authorization, per the
+# precondition protocol below -- capacity probe job 48319 (K=24 uncapped: natural Dmax
+# FALLS with finer eps at fixed T: 643@60 -> 311@120 -> 222@240 sites), then production
+# job 48320 (K=100/T=6/eps=0.05, max_bond=500 pure safety cap, NON-anchor; one-off
+# sbatch at cluster ~/g2_production.sbatch).  Results + full story:
+# docs/research/gaudin-scaling-study.md.  The original shelved-candidate record follows.
 # Candidate (NOT pre-approved): K=100, T=6, eps=0.05, cutoff 1e-8, max_bond TBD.
 # Preconditions before ANY G2 submission:
 #   1. G1 complete and accepted; per-L SUMMARIES live in progress.jsonl + JSON per_L,
