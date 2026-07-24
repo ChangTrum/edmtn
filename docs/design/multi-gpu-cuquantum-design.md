@@ -62,7 +62,7 @@ cuTensorNet.
    so cuTensorNet optimizes). **cotengra's own pathfinder is a non-default optional
    fallback** (supply cotengra's tree/path to the `Network`). cotengra is the
    conduit either way — not excluded. Bypass quimb/cotengra only as a genuine last
-   resort (万不得已) — see decision 7.
+   resort — see decision 7.
 3. **2D network, one-shot whole-spacetime preferred.** Slicing + scheduling +
    resource management are cuTensorNet's job — the one-shot whole-spacetime network
    is exactly what it should slice/schedule. A **manual time-window blocking /
@@ -89,8 +89,8 @@ cuTensorNet.
    otherwise-hidden knob, **extend quimb through its public hooks** — exactly as
    Track 1 exposes the rSVD power-iteration `q` by registering the `edm_rsvd` split
    driver via `decomp.register_split_driver` (using quimb's own `rand_linalg.rsvd`),
-   not by going around quimb. **Bypassing quimb entirely is a genuine last resort
-   (万不得已)**, only when no quimb-routed or hook-based path exists. Default = through
+   not by going around quimb. **Bypassing quimb entirely is a genuine last resort**,
+   only when no quimb-routed or hook-based path exists. Default = through
    quimb. (Track 1 audited 2026-06-28: all knobs route through
    `tensor_network_1d_compress`; the only extension is the registered `edm_rsvd`
    driver — confirming the pattern.)
@@ -185,7 +185,7 @@ NVLink); launch via `sbatch` + MPI. **Capacity milestone:** K=24 / T=9 / ξ=1e-8
 (1-card OOM) completes across 4 cards at `<ξ`. On failure (slice/OOM/precision),
 the explicit error of decision 6 applies.
 
-## Phase D — cross-node interface stub (埋伏笔)
+## Phase D — cross-node interface stub
 
 Feature-flagged, detect-only MPI/NCCL seam (`backend/process_group.py` or
 equivalent): single-node works; multi-node geometry detects-and-reports-unavailable
@@ -217,8 +217,8 @@ execution.
 
 Track 2 = HPC-only, **2D space×time** EDM contracted **one-shot by cuTensorNet**
 (cuTensorNet is the default path/slice/schedule/execute owner, selected through
-quimb; cotengra kept as an optional fallback), parameters routed **through quimb**
-(bypass only 万不得已), failures **raised explicitly** (no silent guard; manual
+quimb; cotengra kept as an optional fallback), parameters routed **through quimb**,
+failures **raised explicitly** (no silent guard; manual
 windowing is the user's call). Precision is the 2D lever; capacity is the multi-GPU lever
 (cuTensorNet distributed slicing, single-node first, cross-node a cheap stub).
 Phase A (install/interop + the 2D assembler) is **done and validated `≤2.4e-15`**
