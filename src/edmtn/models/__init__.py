@@ -7,6 +7,7 @@ Importing this package registers the available models with
 from __future__ import annotations
 
 from .base import AbstractOQSModel, validate_channel, validate_sub_baths
+from .dicke import BATH_STATES, CAVITY_STATES, DickeBathParams, DickeModel
 from .gaudin import (
     COUPLING_PROFILES,
     GaudinBathParams,
@@ -23,6 +24,7 @@ from .spin_boson import SpinBosonBathParams, SpinBosonModel
 
 ModelRegistry.register("spin_boson", SpinBosonModel)
 ModelRegistry.register("gaudin", GaudinModel)
+ModelRegistry.register("dicke", DickeModel)
 
 __all__ = [
     "AbstractOQSModel",
@@ -33,6 +35,10 @@ __all__ = [
     "SpinBosonBathParams",
     "GaudinModel",
     "GaudinBathParams",
+    "DickeModel",
+    "DickeBathParams",
+    "CAVITY_STATES",
+    "BATH_STATES",
     "COUPLING_PROFILES",
     "coupling_profile",
     "linear_couplings",

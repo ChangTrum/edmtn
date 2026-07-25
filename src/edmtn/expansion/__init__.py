@@ -10,6 +10,11 @@ from .base import (
     commutator_superoperator,
     first_order_superoperators,
 )
+from .dissipative import (
+    DissipativeExpander,
+    amplitude_damping_matrix,
+    cavity_damping_channel,
+)
 from .first_order import FirstOrderExpander
 from .second_order import SecondOrderExpander
 
@@ -18,6 +23,9 @@ __all__ = [
     "StepSuperoperators",
     "FirstOrderExpander",
     "SecondOrderExpander",
+    "DissipativeExpander",
+    "amplitude_damping_matrix",
+    "cavity_damping_channel",
     "first_order_superoperators",
     "commutator_superoperator",
     "anticommutator_superoperator",
