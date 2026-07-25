@@ -23,7 +23,7 @@ constructor argument, an entry in a registry, or a hook the underlying
 library provides:
 
 - **Models** register with `ModelRegistry` (importing `edmtn.models`
-  registers the bundled two).
+  registers the bundled three).
 - **Pipelines** are keyed by the model's `bath_type` in the driver's
   registry: `register_pipeline` / `build_pipeline` /
   `available_pipelines`.

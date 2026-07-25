@@ -29,10 +29,12 @@ paper-scale configuration (`K=49`, `T=15`) see
 
 ## What it can do
 
-- **Two ready-made models** — *spin-boson* (a spin in a bosonic/Ohmic bath) and
-  *Gaudin* (a central spin in `K` bath spins). Both are checked against small
-  dense/exact references at the tolerances stated in the tests (uncompressed paths
-  agree to ~1e-10 or better). Compressed paths are checked only at the specific
+- **Three ready-made models** — *spin-boson* (a spin in a bosonic/Ohmic bath),
+  *Gaudin* (a central spin in `K` bath spins) and *Dicke* (a cavity mode coupled to
+  `K` two-level systems, with optional local Lindblad dissipation). All are checked against small
+  dense/exact references at the tolerances stated in the tests (lossless / no-discard
+  paths agree to ~1e-10 or better — for Dicke that means `cutoff=0` with `max_bond=None`,
+  an exact recompression that discards nothing, not a skipped compression). Compressed paths are checked only at the specific
   parameters each test covers, against that test's stated observable/state tolerance —
   `cutoff` is a **local per-bond** truncation threshold, **not** an error bound on the
   polarization, `ρ(t)`, or the trajectory.
@@ -78,7 +80,8 @@ print(res.final_time_bond_dims)      # the final MPS's internal bonds along the 
 
 **The time grid.** `T / eps` must be a *positive integer* (to a small tolerance) — it is
 **not** silently rounded; a non-integer ratio raises `ValueError`. Every public `times`
-array is `[eps, 2 eps, ..., T]` on **all** pipelines (spin-boson, Gaudin Track 1, Track 2),
+array is `[eps, 2 eps, ..., T]` on **all** pipelines (spin-boson, separable Track 1 —
+Gaudin and Dicke — and Track 2),
 so results are directly comparable.
 
 ## What you get back
@@ -89,11 +92,12 @@ reach into `res.evolution.*`:
 | field | axis | what it is |
 |---|---|---|
 | `res.times` | time | `[eps, 2 eps, …, T]` |
-| `res.polarization` | ∥ `times` | `⟨S_channel(t)⟩` (pick `channel=`) |
-| `res.density_matrices` | ∥ `times` | `ρ(t)`, or `None`. Track 2: always present. Spin-boson: present whenever reduced states were recorded — `record_rho=True`, custom observables, **or second order** (which needs them anyway). **Gaudin Track 1: always `None`** — see the next two rows |
-| `res.sub_bath_counts` | fold `L` | Gaudin Track 1: the recorded sub-bath counts |
-| `res.sub_bath_bond_dims` | ∥ `sub_bath_counts` | `D_L` after folding in `L` sub-baths |
-| `res.sub_bath_final_density_matrices` | ∥ `sub_bath_counts` | Gaudin Track 1: `ρ_L(T)` — a *final-time* state per `L`, **not** a time history (needs `record_rho=True`) |
+| `res.polarization` | ∥ `times` | `⟨S_channel(t)⟩` (pick `channel=`), or `None` on a pipeline that publishes none (Dicke/`separable_td`) |
+| `res.density_matrices` | ∥ `times` | `ρ(t)`, or `None`. Track 2: always present. Spin-boson: present whenever reduced states were recorded — `record_rho=True`, custom observables, **or second order** (which needs them anyway). **Separable Track 1 (Gaudin *and* Dicke): always `None`** — see the next rows |
+| `res.final_density_matrix` | — | the reduced state at the end of the solve, on **every** pipeline and without `record_rho`; backend-native array. Separable: `ρ_L(T)` for `L = sub_baths_used` |
+| `res.sub_bath_counts` | fold `L` | separable Track 1 (Gaudin, Dicke): the recorded sub-bath counts |
+| `res.sub_bath_bond_dims` | ∥ `sub_bath_counts` | separable Track 1 (Gaudin, Dicke): `D_L` after folding in `L` sub-baths |
+| `res.sub_bath_final_density_matrices` | ∥ `sub_bath_counts` | separable Track 1 (Gaudin, Dicke): `ρ_L(T)` — a *final-time* state per `L`, **not** a time history (needs `record_rho=True`) |
 | `res.time_bond_dims` | ∥ `times` | max bond after each physical step (single-bath Track 1) |
 | `res.final_time_bond_dims` | MPS bonds | the final MPS's internal bonds along the time chain (length `num_sites-1`); `None` on Track 2 |
 | `res.truncation_errors` | pipeline axis | real truncation metric — see **[Truncation metric](#truncation-metric)** |
@@ -182,8 +186,8 @@ edmtn/
 ├── pyproject.toml              # package + pytest configuration
 ├── src/edmtn/                  # the package, organised by layer
 │   ├── backend/                # Layer 0: array/linalg backend (NumPy/CuPy via autoray) + GPU compat shims
-│   ├── models/                 # Layer 1: physical models (spin-boson, Gaudin)
-│   ├── cumulants/              # Layer 2: bath cumulant engines (Gaussian, separable)
+│   ├── models/                 # Layer 1: physical models (spin-boson, Gaudin, Dicke)
+│   ├── cumulants/              # Layer 2: bath cumulant engines (Gaussian, separable, separable_td)
 │   ├── kernels/                # Layer 3: combined-kernel MPO construction
 │   ├── expansion/              # Layer 4: 1st/2nd-order time-step expansion
 │   ├── evolution/              # Layer 5: quimb-backed evolution + compression
@@ -239,6 +243,7 @@ immutable afterwards (use `dataclasses.replace` for a variant).
 |---|---|---|
 | `SpinBosonModel` | `1` only | `S_z` (its single coupling channel) |
 | `GaudinModel` | `1`, `2`, `3` | `S_x`, `S_y`, `S_z` |
+| `DickeModel` | `None` only | *no* time-resolved polarization is published by the `separable_td` pipeline; `channel=1` is a legal index but raises `NotImplementedError`, and anything else still raises `ValueError`. Read `res.final_density_matrix` instead |
 
 `0`, negative values, out-of-range values, floats, strings and `bool` all raise `ValueError` —
 in particular `channel=0` is rejected rather than silently selecting the last operator by
@@ -272,7 +277,7 @@ it cannot silently compare a different model.
 | exception | meaning |
 |---|---|
 | `ValueError` | malformed input — a bad config value, an invalid `channel`, a malformed model, or an illegal argument to a direct `run()` |
-| `NotImplementedError` | legal input, capability not implemented — non-zero temperature on the Gaussian engine, `time_windows`, spin-boson on Track 2, custom observables on separable/Track 2 |
+| `NotImplementedError` | legal input, capability not implemented — non-zero temperature on the Gaussian engine, `time_windows`, spin-boson on Track 2, custom observables on separable/Track 2, and on `separable_td` (Dicke) an explicitly given legal `channel` or any `timestep_convergence()` call |
 | `FloatingPointError` | legal parameters whose correlation overflows float64 |
 
 Note: `compress_method` is a quimb 1D-MPS-compress algorithm and applies to `cpu`/`gpu`
@@ -317,7 +322,7 @@ Note this is the discarded **weight** (`Σσ²`), not quimb's discarded 2-norm
 | `[]` | Track 2: exact-only, it performs no Track-1 compression |
 
 Axis: one entry per **physical time step** for single-bath (order 2 takes the max over both
-sub-steps), and one per **recorded `L`** for Gaudin Track 1 (the max over every fold since
+sub-steps), and one per **recorded `L`** for separable Track 1 — Gaudin and Dicke — (the max over every fold since
 the previous recorded `L`, so `record_every>1` drops nothing). It is a **local** per-record
 quantity — not a cumulative trajectory error, and not a bound on observable error.
 

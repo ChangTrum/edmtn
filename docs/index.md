@@ -4,13 +4,15 @@
 non-Markovian open-quantum-system dynamics — a quimb + CuPy implementation of
 the polynomial-complexity EDM formalism.
 
-Two model families are supported: the spin-boson model (a spin in a Gaussian
-bosonic bath) and the Gaudin model (a central spin coupled to `K` bath
-spins). Both are solved through a single `solve()` entry point that assembles
+Three model families are supported: the spin-boson model (a spin in a Gaussian
+bosonic bath), the Gaudin model (a central spin coupled to `K` bath spins) and
+the inhomogeneous Dicke model (a cavity mode coupled to `K` two-level systems,
+optionally with local Lindblad dissipation). All are solved through a single
+`solve()` entry point that assembles
 the layered pipeline — model → cumulants → kernel MPO → time-step expansion →
 MPS evolution → observables. The compressing pipeline runs on CPU (NumPy) or
 a single NVIDIA GPU (CuPy) via quimb/autoray dispatch; a separate exact-only
-cuTensorNet backend (`backend='hpc'`, separable/Gaudin models only) targets
+cuTensorNet backend (`backend='hpc'`, Gaudin / `bath_type='separable'` only) targets
 multi-GPU HPC hardware.
 
 New here? Start with {doc}`getting-started/installation` and

@@ -32,12 +32,37 @@ executed* backend labels (revealing e.g. a GPU→CPU fallback), and
 `coarse_sub_baths_used` / `fine_sub_baths_used` read back from the
 results rather than the request.
 
+## Models without a polarization history
+
+`timestep_convergence()` compares polarization histories, so it raises
+`NotImplementedError` on a pipeline that publishes none — currently
+`bath_type='separable_td'` (`DickeModel`). Compare final states directly
+instead:
+
+```python
+import numpy as np
+from edmtn.driver import solve
+from edmtn.models import DickeModel
+
+model = DickeModel(K=3, n_fock=6, coupling=0.5, kappa=0.1)
+coarse = solve(model, T=0.6, eps=0.05, expansion_order=2, cutoff=1e-8)
+fine = solve(model, T=0.6, eps=0.025, expansion_order=2, cutoff=1e-8)
+deviation = np.max(np.abs(coarse.final_density_matrix - fine.final_density_matrix))
+```
+
+At `expansion_order=2` that deviation falls by about a factor of 4 per
+halving of `eps`, and at `expansion_order=1` by about 2 — **provided**
+the time-discretisation error dominates: `n_fock` is held fixed, the
+compression error (`cutoff`, `max_bond`) is well below it, and neither
+has reached a floor. Once truncation or round-off dominates, the ratio
+degrades and no longer measures the scheme's order.
+
 ## The main exceptions from the entry guards and execution layers
 
 | exception | meaning |
 |---|---|
 | `ValueError` | malformed input — a bad config value, an invalid `channel`, a malformed model, an unsupported parameter combination, or an illegal argument to a direct `run()` |
-| `NotImplementedError` | *legal* input, capability not implemented — non-zero temperature on the Gaussian engine, `time_windows`, spin-boson on Track 2, custom observables on separable/Track 2 |
+| `NotImplementedError` | *legal* input, capability not implemented — non-zero temperature on the Gaussian engine, `time_windows`, spin-boson on Track 2, custom observables on separable/Track 2, a `channel` or `timestep_convergence()` on `separable_td` |
 | `FloatingPointError` | the computation produced a non-finite number from legal parameters — a bath correlation overflowing float64, or a non-finite/negative truncation metric |
 | `CuTensorNetContractionError` (a `RuntimeError`) | EDMTN-detected Track-2 setup or dispatch failures — e.g. a missing distributed MPI wrapper, or an unsupported multi-rank pathfinder. CuPy, cuQuantum and MPI calls may also raise their native runtime exceptions |
 

@@ -274,6 +274,12 @@ def test_models_page_states_the_capability_boundaries():
     assert "generation order" in text                  # ou is not sorted
     assert "no sorting and no normalisation" in text   # custom arrays are verbatim
     assert "read-only" in text                         # supplied arrays are copied + locked
+    # Dicke: the boundaries that are engine limits, not parameter errors
+    assert "n_fock" in text                            # the truncation is a numerical knob
+    assert "not the physical highest occupied" in text  # ... distinct from any n_max
+    assert "fock_populations" in text                  # how to check it
+    assert "Locality is a requirement" in text         # local dissipators only
+    assert "No coupling-channel polarization" in text  # and what that means for `channel`
 
 
 def test_solving_page_matches_the_config_contract():
@@ -449,11 +455,12 @@ def test_testing_page_matches_the_pytest_contract():
 def test_pipeline_registry_and_module_docstring_are_current():
     from edmtn.driver import available_pipelines
     from edmtn.driver import auto_config as _auto_config
-    assert {"gaussian", "separable"} <= set(available_pipelines())
+    assert {"gaussian", "separable", "separable_td"} <= set(available_pipelines())
     doc = _auto_config.__doc__ or ""
     assert "Phase 1" not in doc                          # the old phase note is gone
     assert "pipeline only" not in doc                    # no gaussian-only claim
     assert "``separable``" in doc                        # separable is built in, and
+    assert "``separable_td``" in doc                     # so is the Dicke pipeline, and
     assert "future bath type" in doc                     # the registry stays the seam
 
 
@@ -474,3 +481,13 @@ def test_model_docstrings_state_ranges_and_capability_boundaries():
     # copied + read-only containers
     assert "read-only" in GaussianCumulants.__doc__
     assert "read-only" in SeparableCorrelation.__doc__
+
+    from edmtn.models import DickeBathParams, DickeModel
+
+    dm = DickeModel.__doc__
+    assert "strict non-``bool`` integer" in dm
+    assert "scalar is the collective coupling" in dm   # coupling doubles as G
+    assert "verbatim, in the order given" in dm        # an array is never sorted
+    assert "*not* the highest occupied photon number" in dm
+    assert "read-only" in DickeBathParams.__doc__
+    assert "never sorts or renormalises" in DickeBathParams.__doc__
