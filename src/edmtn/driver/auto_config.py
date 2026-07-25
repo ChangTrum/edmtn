@@ -1,10 +1,12 @@
 """Pipeline auto-configuration (Layer 7).
 
 Selects and constructs the engine stack (cumulant -> kernel -> expansion ->
-decomposition -> evolution) from a model's ``bath_type``.  Two pipelines are
-built in and registered on import: ``gaussian`` (spin-boson) and ``separable``
-(Gaudin).  Pipelines are kept in a small registry so a future bath type
-(e.g. ``chain``) slots in without touching the driver.
+decomposition -> evolution) from a model's ``bath_type``.  Three pipelines are
+built in and registered on import: ``gaussian`` (spin-boson), ``separable``
+(Gaudin) and ``separable_td`` (Dicke -- a separable bath whose interaction-picture
+operators rotate, plus optional local Lindblad dissipation).  Pipelines are kept in
+a small registry so a future bath type (e.g. ``chain``) slots in without touching
+the driver.
 """
 
 from __future__ import annotations
@@ -15,8 +17,10 @@ from dataclasses import dataclass, field, replace
 
 from ..expansion.first_order import FirstOrderExpander
 from ..expansion.second_order import SecondOrderExpander
+from ..expansion.dissipative import DissipativeExpander, cavity_damping_channel
 from ..kernels.gaussian_mpo import GaussianKernelEngine
 from ..kernels.separable_mpo import SeparableKernelEngine
+from ..kernels.separable_td_mpo import SeparableTDKernelEngine
 from ..evolution._validation import CUTOFF_MODES as _CUTOFF_MODES
 from ..evolution._validation import validate_compression_combination
 from ..evolution.separable_bath import SeparableBathEvolution
@@ -386,5 +390,35 @@ def _build_separable(model, config: SolverConfig):
     return kernel_engine, evolution
 
 
+def _build_dicke(model, config: SolverConfig):
+    """Pipeline for a time-dependent separable bath with local dissipation (Dicke).
+
+    Two differences from ``_build_separable``:
+
+    * the kernel is built from the **resolved** ``config.expansion_order`` -- passed in
+      explicitly rather than re-read from ``model.time_step_order``, because the order
+      fixes the sub-step map and a disagreement with the evolution would silently sample
+      the bath at the wrong times (the kernel's ``check_grid`` hook catches it);
+    * the expander is wrapped so each physical step also applies the cavity channel in
+      Strang half-steps.  With ``kappa = 0`` the wrapper returns the base families
+      bit-for-bit, so a closed model is unaffected.
+    """
+    kernel_engine = SeparableTDKernelEngine.from_model(
+        model, T=config.T, eps=config.eps, order=config.expansion_order
+    )
+    expander = DissipativeExpander(
+        _make_expander(config.expansion_order), cavity_damping_channel(model.kappa)
+    )
+    evolution = SeparableBathEvolution(
+        expander=expander,
+        compress_method=config.compress_method,
+        compress_decomp=config.compress_decomp,
+        compress_decomp_q=config.compress_decomp_q,
+        compress_canon=config.compress_canon,
+    )
+    return kernel_engine, evolution
+
+
 register_pipeline("gaussian", _build_gaussian)
 register_pipeline("separable", _build_separable)
+register_pipeline("separable_td", _build_dicke)

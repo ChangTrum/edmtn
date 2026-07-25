@@ -3,9 +3,10 @@
 ``EDMSolver`` orchestrates the full stack: it auto-selects the engine pipeline
 from the model's ``bath_type`` (Layer 7 :mod:`auto_config`), evolves the EDM-MPS
 (Layer 5), and extracts observables (Layer 6).  The coupling-channel
-polarization ``<S_a(t)>`` is always returned (the cheap Eq.-F2 sweep); custom
+polarization ``<S_a(t)>`` is returned by the pipelines that define it (the cheap
+Eq.-F2 sweep) and is ``None`` on ``separable_td``, which does not; custom
 operators are evaluated from the recorded reduced states when ``record_rho`` is
-set.
+set.  ``final_density_matrix`` is filled on every pipeline.
 """
 
 from __future__ import annotations
@@ -31,31 +32,45 @@ class SolverResult:
     ----------
     times : ndarray
         Physical time grid ``[eps, 2 eps, ..., T]`` (ascending).
-    polarization : ndarray
-        Coupling-channel ``<S_a(t)>`` over ``times`` (Eq. F2).
+    polarization : ndarray or None
+        Coupling-channel ``<S_a(t)>`` over ``times`` (Eq. F2) -- **not available on every
+        pipeline**.  ``None`` on the ``separable_td`` (Dicke) pipeline, which publishes no
+        time-resolved coupling-channel history; read ``final_density_matrix`` (or the
+        per-``L`` states) there instead.
+    final_density_matrix : ndarray or None
+        The reduced density matrix at the end of the solve, on **every** pipeline and
+        regardless of ``record_rho`` -- so a successful solve always returns a physical
+        state, not just bond dimensions.  Reuses a state the pipeline already computed
+        where one exists, so it costs no extra contraction.  In the **backend-native**
+        array type (a CuPy array after a GPU run), like the other reduced-state fields.
+        **Separable pipelines:** this is ``rho_L(T)`` for ``L = sub_baths_used`` folded
+        sub-baths -- with ``sub_baths < K`` it is *not* the full-``K`` result.
     density_matrices : list[ndarray] or None
         ``rho(t)`` aligned 1:1 with ``times`` (so ``len == len(times)``), or ``None`` when the
         pipeline produces no time-axis reduced-state history.  Single-bath: present whenever the
         evolution recorded reduced states (``record_rho``, custom observables, OR second order --
         the ρ(t) is exposed as-is, not re-hidden).  Track 2: always present (first-class output).
-        **Separable/Gaudin Track 1: always None** -- its per-``L`` states are ``rho_L(T)`` (axis =
-        sub-bath count, not time) and live in ``sub_bath_final_density_matrices``, never here.
+        **Separable Track 1 (Gaudin AND Dicke): always None** -- their per-``L`` states are
+        ``rho_L(T)`` (axis = sub-bath count, not time) and live in
+        ``sub_bath_final_density_matrices``, never here.
     time_bond_dims : list[int] or None
         Max bond dimension after each *physical time step* (``len == len(times)``), or ``None`` if
         the pipeline has no per-time-step bond history (Track 1 separable, Track 2).
     sub_bath_counts : list[int] or None
-        Separable Track 1: the recorded sub-bath counts ``L`` (``evolution.recorded_L``).
+        Separable Track 1 (Gaudin and Dicke): the recorded sub-bath counts ``L``.
     sub_bath_bond_dims : list[int] or None
-        Separable Track 1: ``D_L`` after folding in ``L`` sub-baths, aligned with ``sub_bath_counts``.
+        Separable Track 1 (Gaudin and Dicke): ``D_L`` after folding in ``L`` sub-baths,
+        aligned with ``sub_bath_counts``.
     sub_bath_final_density_matrices : list[ndarray] or None
-        Separable Track 1: ``rho_L(T)`` per recorded ``L`` (aligned with ``sub_bath_counts``); only
-        present when ``record_rho``.  ``None`` otherwise / on other pipelines.
+        Separable Track 1 (Gaudin and Dicke): ``rho_L(T)`` per recorded ``L`` (aligned with
+        ``sub_bath_counts``); only present when ``record_rho``.  ``None`` otherwise / on
+        other pipelines.
     final_time_bond_dims : list[int] or None
         The final EDM-MPS's internal bond dimensions along the *time* chain (``mps.bond_dims``).
         NOT aligned with ``times``: length is ``mps.num_sites - 1`` (``num_sites == order*n_steps``).
         ``None`` when there is no MPS (Track 2).
     sub_baths_used : int or None
-        Separable Track 1 / Track 2: the actual number of sub-baths ``L`` folded (the resolved
+        Separable Track 1 (Gaudin and Dicke) / Track 2: the actual number of sub-baths ``L`` folded (the resolved
         ``sub_baths``; ``K`` when ``sub_baths=None``).  ``None`` for non-separable models -- so the
         caller can tell how many bath spins were really included, without guessing from the request.
     bond_dims : list[int]
@@ -115,6 +130,7 @@ class SolverResult:
     sub_bath_final_density_matrices: object = None   # separable T1: rho_L(T) (∥ sub_bath_counts, if record_rho)
     final_time_bond_dims: object = None              # final EDM-MPS internal bonds along the time chain
     sub_baths_used: int | None = None                # actual number of sub-baths folded (None if N/A)
+    final_density_matrix: object = None              # reduced state at the end of the solve (all pipelines)
 
     @property
     def max_bond(self) -> int:
@@ -236,7 +252,36 @@ class EDMSolver:
 
     # -- main entry point --------------------------------------------------
 
-    def solve(self, observables: dict | None = None, *, channel: int = 1) -> SolverResult:
+    def _resolve_channel(self, channel):
+        """Normalise the requested coupling channel, or ``None`` for "no polarization".
+
+        ``None`` (the default) means "unspecified".  On the pipelines that publish a
+        coupling-channel polarization it resolves to the historical default ``1``; on
+        ``separable_td`` it means the caller did not ask for one, and the solve proceeds
+        without it.
+
+        An **explicitly given** channel is always type- and range-checked first, so the
+        strict contract holds everywhere: a bool, a float, a string, ``0``, a negative
+        index or an out-of-range value raises ``ValueError`` on every model.  Only a legal
+        channel on ``separable_td`` then raises ``NotImplementedError`` -- the Dicke model
+        does have a coupling operator (``d_phys = 3``); what this pipeline lacks is a
+        validated time-resolved Eq.-F2/F3 extraction for a *rotating* coupling operator.
+        """
+        n_ch = len(self.model.coupling_operators())
+        if self.model.bath_type == "separable_td":
+            if channel is None:
+                return None
+            validate_channel(channel, n_ch)     # type/range first, then the capability limit
+            raise NotImplementedError(
+                f"bath_type='separable_td' has {n_ch} coupling operator(s), but this "
+                f"pipeline publishes no time-resolved coupling-channel history: "
+                f"the Eq.-F2/F3 arm selector's time mapping is established only for a time-INDEPENDENT coupling operator, and it has not been defined or validated for a rotating "
+                f"S(t). Call without `channel` and read result.final_density_matrix, or "
+                f"result.sub_bath_final_density_matrices with record_rho=True")
+        return validate_channel(1 if channel is None else channel, n_ch)
+
+    def solve(self, observables: dict | None = None, *,
+              channel: int | None = None) -> SolverResult:
         """Evolve and extract observables.
 
         Parameters
@@ -244,14 +289,20 @@ class EDMSolver:
         observables : dict[str, callable], optional
             Mapping ``name -> operator_fn(t)`` evaluated as ``Tr[O(t) rho(t)]``
             from the recorded reduced states (requires ``config.record_rho``).
-        channel : int
-            Coupling channel (1-based) whose polarization history is returned.
+        channel : int, optional
+            Coupling channel (1-based) whose polarization history is returned.  ``None``
+            (the default) selects channel ``1`` on the pipelines that provide a
+            polarization history, and means "no polarization requested" on
+            ``separable_td``, which provides none -- see :meth:`_resolve_channel`.
         """
         # validate once, before any backend/bath dispatch or evolution -- every inner path
-        # then receives a normalised Python int (no negative-index channel selection)
-        channel = validate_channel(channel, len(self.model.coupling_operators()))
+        # then receives a normalised Python int (no negative-index channel selection),
+        # or None where the pipeline publishes no polarization
+        channel = self._resolve_channel(channel)
         if self.config.backend == "hpc":
             return self._solve_hpc(observables, channel=channel)
+        if self.model.bath_type == "separable_td":
+            return self._solve_separable_td(observables)
         if self.model.bath_type == "separable":
             return self._solve_separable(observables, channel=channel)
 
@@ -307,6 +358,7 @@ class EDMSolver:
             density_matrices=ev.density_matrices,          # rho(t) if the evolution recorded it, else None
             time_bond_dims=ev.bond_dims,                   # max bond per physical time step
             final_time_bond_dims=ev.mps.bond_dims,         # final MPS internal bonds along time
+            final_density_matrix=_final_reduced_state(ev.mps, ev.density_matrices),
         )
 
     # -- hpc track (cuQuantum 2D one-shot contraction) --------------------
@@ -339,6 +391,7 @@ class EDMSolver:
             density_matrices=out["density_matrices"],
             error_metrics=out["error_metrics"],
             sub_baths_used=out["sub_baths_used"],
+            final_density_matrix=out["final_rho"],   # already produced by the 2D contraction
         )
 
     # -- separable bath (outer-loop recursion) ----------------------------
@@ -386,7 +439,13 @@ class EDMSolver:
         # MPS (backend-safe via ObservableExtractor.expectation; no record_rho needed).
         N = cfg.n_steps
         Sop = self.model.coupling_operators_at(N * cfg.eps)[channel - 1]
-        p_T = float(ObservableExtractor.expectation(ev.mps, Sop).real)
+        # ONE reduced-state contraction, shared by the final polarization point and the
+        # public final_density_matrix field (previously each would have contracted the MPS
+        # separately).  Reuses the recorded rho_L(T) when record_rho already produced it.
+        final_rho = _final_reduced_state(ev.mps, ev.density_matrices)
+        _, vals = ObservableExtractor.expectation_history(
+            [final_rho], [N * cfg.eps], lambda t: Sop)
+        p_T = float(vals[0].real)
         pol = np.concatenate((raw_pol[1:], np.asarray([p_T], dtype=np.float64)))
         times = cfg.eps * np.arange(1, N + 1, dtype=np.float64)
         return SolverResult(
@@ -405,12 +464,72 @@ class EDMSolver:
             sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
             final_time_bond_dims=ev.mps.bond_dims,
             sub_baths_used=ev.n_sub_baths,                         # actual L folded (== validate_sub_baths)
+            final_density_matrix=final_rho,                        # rho_L(T) for L = sub_baths_used
+        )
+
+    # -- time-dependent separable bath (Dicke) ----------------------------
+
+    def _solve_separable_td(self, observables: dict | None) -> SolverResult:
+        """Solve a time-dependent separable-bath model (Dicke): same Eq.-21 outer loop as
+        :meth:`_solve_separable`, but **without** a coupling-channel polarization history.
+
+The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
+        the rest.  Its time mapping is established only for a **time-independent**
+        coupling operator: the arm at a site carries ``S`` at that site's sample time,
+        while the environment to its right is the state *before* that step, so with a
+        rotating ``S(t)`` the operator and the state sit at different times.  Defining and
+        validating that alignment for a time-dependent coupling is separate work, not done
+        here -- so no history is published rather than one whose time axis is not
+        established.  ``polarization`` is therefore ``None``, and ``density_matrices`` is
+        ``None`` too (the per-``L`` states are ``rho_L(T)``, indexed by sub-bath count,
+        not by time).
+        Everything else is the standard separable contract, plus
+        ``final_density_matrix`` -- so a default solve still returns a physical state.
+        """
+        if observables:
+            raise NotImplementedError(
+                "custom per-time observables are not supported for time-dependent "
+                "separable baths; run with record_rho=True and read "
+                "result.sub_bath_final_density_matrices (the per-L rho_L(T)), or read "
+                "result.final_density_matrix")
+        cfg = self.config
+        convert, memory, backend_label = self._resolve_backend()
+        ev = self.evolution.run(
+            self.model,
+            self.kernel_engine,
+            cfg.eps,
+            cfg.n_steps,
+            max_bond=cfg.max_bond,
+            cutoff=cfg.cutoff,
+            cutoff_mode=cfg.cutoff_mode,
+            record_rho=cfg.record_rho,
+            sub_baths=cfg.sub_baths,
+            convert=convert,
+            memory=memory,
+        )
+        return SolverResult(
+            times=cfg.eps * np.arange(1, cfg.n_steps + 1, dtype=np.float64),
+            polarization=None,                                     # no channel history here
+            bond_dims=ev.bond_dims,                                # legacy alias of sub_bath_bond_dims
+            truncation_errors=ev.truncation_errors,
+            expansion_order=cfg.expansion_order,
+            observables={},
+            mps=ev.mps,
+            evolution=ev,
+            backend=backend_label,
+            # density_matrices stays None: the per-L states below are rho_L(T), not rho(t)
+            sub_bath_counts=ev.recorded_L,
+            sub_bath_bond_dims=ev.bond_dims,
+            sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
+            final_time_bond_dims=ev.mps.bond_dims,
+            sub_baths_used=ev.n_sub_baths,
+            final_density_matrix=_final_reduced_state(ev.mps, ev.density_matrices),
         )
 
     # -- convergence helpers ----------------------------------------------
 
     def timestep_convergence(self, *, tol: float | None = None,
-                             channel: int = 1) -> TimestepConvergence:
+                             channel: int | None = None) -> TimestepConvergence:
         """Compare the coupling polarization at ``eps`` and ``eps/2``.
 
         The fine run is built with ``dataclasses.replace(self.config, eps=eps/2)``, so it
@@ -424,8 +543,24 @@ class EDMSolver:
 
         Returns a :class:`TimestepConvergence` (``.deviation`` / ``.converged`` / ``.metadata``);
         it still unpacks as the legacy ``dev, ok = ...`` 2-tuple.
+
+        Not available on ``separable_td`` (Dicke): the comparison is defined on the
+        coupling-channel polarization, which that pipeline does not publish.  It raises
+        ``NotImplementedError`` up front rather than letting a ``None`` polarization leak
+        into a deep ``TypeError``; compare ``final_density_matrix`` from two solves at
+        ``eps`` and ``eps/2`` instead.
         """
-        channel = validate_channel(channel, len(self.model.coupling_operators()))
+        if self.model.bath_type == "separable_td":
+            # keep the strict channel contract even though the capability is missing:
+            # an illegal channel is still a ValueError, only a LEGAL one reaches the gate
+            if channel is not None:
+                validate_channel(channel, len(self.model.coupling_operators()))
+            raise NotImplementedError(
+                "timestep_convergence compares the coupling-channel polarization, which "
+                "bath_type='separable_td' does not publish; instead solve twice (eps and "
+                "eps/2) and compare result.final_density_matrix, e.g. "
+                "abs(a.final_density_matrix - b.final_density_matrix).max()")
+        channel = self._resolve_channel(channel)
         coarse = self.solve(channel=channel)
         fine_cfg = replace(self.config, eps=self.config.eps / 2)
         fine = EDMSolver(self.model, fine_cfg).solve(channel=channel)
@@ -446,8 +581,26 @@ class EDMSolver:
         return TimestepConvergence(dev, ok, metadata)
 
 
+def _final_reduced_state(mps, recorded):
+    """The final reduced density matrix, reusing a recorded one when the pipeline has it.
+
+    ``recorded`` is the pipeline's list of reduced states (``rho(t)`` for single-bath,
+    ``rho_L(T)`` for separable) or ``None``.  Its last entry is already the final state, so
+    taking it avoids a second closing contraction of the whole MPS; only when nothing was
+    recorded is one contraction performed.  Returns the array in its native backend type.
+    """
+    if recorded:
+        return recorded[-1]
+    return mps.reduced_density_matrix()
+
+
 def solve(
-    model, *, T: float, eps: float, observables: dict | None = None, channel: int = 1, **kwargs
+    model, *, T: float, eps: float, observables: dict | None = None,
+    channel: int | None = None, **kwargs
 ) -> SolverResult:
-    """Convenience one-shot solve."""
+    """Convenience one-shot solve.
+
+    ``channel=None`` (the default) selects coupling channel ``1`` on the pipelines that
+    publish a polarization history, and means "none requested" on ``separable_td``.
+    """
     return EDMSolver.from_model(model, T=T, eps=eps, **kwargs).solve(observables, channel=channel)

@@ -20,10 +20,18 @@ linearly increasing bond-dimension theorem holds for every ``rho_L`` (Theorem 2)
 so the cost stays polynomial.
 
 First- and second-order time-step expansions are supported.  Second order runs on
-the doubled sub-step grid (``2 N`` sites): the only difference for a separable
-bath is that the system MPS ``rho_0`` alternates the ``S_1`` / ``S_2`` families
-(the bath sub-bath MPO is time-uniform either way, the Gaudin bath being
-time-independent).
+the doubled sub-step grid (``2 N`` sites): the system MPS ``rho_0`` alternates the
+``S_1`` / ``S_2`` families, and the sub-bath MPO follows the same sub-step map.
+
+This engine serves **both** separable bath types.  For ``bath_type='separable'``
+(Gaudin) the sub-bath MPO is time-uniform, because those bath spins have no
+self-Hamiltonian.  For ``bath_type='separable_td'`` (Dicke) it is not: every time site
+carries its own tensor, the system operators rotate too, and local Lindblad channels are
+folded in.  The engine itself does not branch on this -- it reads whatever per-site
+tensors the kernel provides -- but it does sample the system operators at the **midpoint**
+of each physical step (see :meth:`SeparableBathEvolution._build_system_mps`) and offers an
+optional ``check_grid`` hook so a time-specific kernel can reject a grid it was not built
+for.
 """
 
 from __future__ import annotations
@@ -189,6 +197,15 @@ class SeparableBathEvolution:
         K = validate_separable_bath_kernel(model, kernel_engine)
         # sub_baths only after model/kernel K agree; None -> K; K+1 / 2.9 / True -> ValueError
         n_fold = validate_sub_baths(sub_baths, K)
+        # Optional grid hook: a kernel whose site tensors are TIME-SPECIFIC (the
+        # separable_td engine) exposes check_grid and rejects a grid it was not built for.
+        # The site count alone cannot catch this -- (eps, n_steps, order) = (0.1, 4, 1) and
+        # (0.1, 2, 2) give the same number of sites -- and a mismatch is not a crash but a
+        # silently wrong sampling of the bath.  Called BEFORE any tensor is built.  Kernels
+        # with time-uniform sites (Gaudin) have no such attribute and are unaffected.
+        check_grid = getattr(kernel_engine, "check_grid", None)
+        if check_grid is not None:
+            check_grid(eps=eps, n_steps=n_steps, order=order)
 
         d = model.system_dim
         if convert is None:
@@ -258,6 +275,17 @@ class SeparableBathEvolution:
         Site ``p`` (newest first) carries the system superoperator family of
         sub-step ``g = n_sites - p``; for order 2 the family alternates
         ``S_1`` (odd ``g``) / ``S_2`` (even ``g``).
+
+        The interaction-picture operators are sampled at the **midpoint** of the physical
+        step, ``t_n^* = (n - 1/2) eps``, with both algebraic sub-steps of a step sharing
+        that one time.  Midpoint sampling is what makes ``order = 2`` globally second
+        order for a time-dependent coupling (an endpoint reproduces the first Magnus term
+        only to ``O(eps^2)`` and caps the scheme at first order); see
+        ``docs/design/dicke-second-order-discretisation.md``.  For a model whose
+        interaction-picture operators are constant -- Gaudin, where ``H_S = 0`` -- the
+        sampling point is irrelevant and the tensors are unchanged.  The bath side must
+        use the identical map, which is what the ``check_grid`` hook in :meth:`run`
+        guards.
         """
         n_sites = order * n_steps
         fam_cache: dict[int, list] = {}
@@ -267,7 +295,7 @@ class SeparableBathEvolution:
             n = (g - 1) // order + 1        # physical step 1..n_steps
             sub = (g - 1) % order           # 0 -> S_1, 1 -> S_2
             if n not in fam_cache:
-                fam_cache[n] = self.expander.build_at(model, n * eps, eps).families
+                fam_cache[n] = self.expander.build_at(model, (n - 0.5) * eps, eps).families
             S = fam_cache[n][sub]           # (d_phys, d**2, d**2)
             tensors.append(convert(np.asarray(S, dtype=np.complex128)))
         return EDMMPS(tensors=tensors, d=d, d_phys=d_phys, rho0_vec=rho0_vec)
