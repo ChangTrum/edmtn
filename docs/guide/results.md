@@ -13,7 +13,7 @@ below — absence is explicit, never silently zero-filled.
 |---|---|
 | `times` | the physical grid `[eps, 2 eps, ..., T]`, ascending |
 | `polarization` | `<S_a(t)>` for the selected channel, aligned with `times` — or `None` on a pipeline that publishes no coupling-channel history (`separable_td`/Dicke). Not every model has one |
-| `density_matrices` | `rho(t)` aligned 1:1 with `times`, or `None` when the pipeline produces no time-axis state history. Single-bath: present whenever reduced states were recorded (`record_rho=True`, custom observables, or second order — which needs them anyway). Track 2: always present. **Separable Track 1 (Gaudin and Dicke): always `None`** — its per-`L` states live on the fold axis, below |
+| `density_matrices` | `rho(t)` aligned 1:1 with `times`, or `None` when the pipeline produces no time-axis state history. Single-bath: present whenever reduced states were recorded (`record_rho=True`, custom observables, or second order — which needs them anyway). Track 2: always present. **Separable Track 1 (Gaudin and Dicke): `None` by default**, and populated by `record_time_reads=True` (which needs `compress_method='dm_tracking'` when compressing) — one fold yields every step, see {doc}`../design/causal-prefix-time-reads`. Its per-`L` states are a different axis and stay below |
 | `time_bond_dims` | max bond after each physical step (single-bath Track 1); `None` elsewhere |
 | `observables` | custom observable histories (single-bath Track 1 only; separable Track 1 and Track 2 raise `NotImplementedError` when custom observables are requested) |
 
@@ -22,6 +22,7 @@ below — absence is explicit, never silently zero-filled.
 | field | contract |
 |---|---|
 | `final_density_matrix` | the reduced density matrix at the end of the solve, on **every** pipeline and regardless of `record_rho` — so a successful solve always returns a physical state, never only bond dimensions. Reuses a state the pipeline already computed, so it costs no extra contraction, and keeps the **backend-native** array type (a CuPy array after a GPU run). On the separable pipelines it is `rho_L(T)` for `L = sub_baths_used`: with `sub_baths < K` it is *not* the full-`K` result |
+| `compression_method_used` | the outer 1D-compress path entered (`zipup` / `direct` / `dm` / `dm_tracking`), or `None` when no compression ran or on Track 2. Not the per-bond decomposition: `rsvd` falls back to the exact SVD per bond |
 
 ## Fold-axis fields (separable Track 1: Gaudin and Dicke)
 

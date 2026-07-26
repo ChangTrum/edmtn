@@ -52,8 +52,10 @@ from ._validation import (
     validate_positive_finite_float,
     validate_positive_int,
     validate_separable_bath_kernel,
+    validate_time_read_combination,
 )
 from .mps_utils import EDMMPS
+from .prefix_reads import PrefixTerminators
 
 
 @dataclass
@@ -92,6 +94,14 @@ class SeparableEvolutionResult:
     bond_dims: list = field(default_factory=list)
     density_matrices: list | None = None
     truncation_errors: list[float | None] = field(default_factory=list)
+    #: ``rho_L(t_n)`` for the FINAL ``L``, one entry per physical step (axis = TIME), or
+    #: ``None`` unless ``record_time_reads``.  A different axis from
+    #: :attr:`density_matrices`, which is ``rho_L(T)`` per sub-bath count -- the two are
+    #: orthogonal and may be recorded together.  See
+    #: :mod:`edmtn.evolution.prefix_reads`.
+    time_density_matrices: list | None = None
+    #: outer compression path actually entered, or ``None`` if none ran
+    compression_method_used: str | None = None
 
 
 class SeparableBathEvolution:
@@ -111,7 +121,7 @@ class SeparableBathEvolution:
         self.expander = expander if expander is not None else SecondOrderExpander()
         if self.expander.order not in (1, 2):
             raise NotImplementedError(f"unsupported expansion order {self.expander.order}")
-        self.compress_method = compress_method         # quimb 1D-compress: 'zipup'|'dm'|'direct'
+        self.compress_method = compress_method         # 'zipup'|'dm'|'direct'|'dm_tracking'
         self.compress_decomp = compress_decomp         # 'exact' | 'rsvd'
         self.compress_decomp_q = compress_decomp_q     # rsvd power iterations
         self.compress_canon = compress_canon           # 'quimb' | 'householder' | 'cholqr'
@@ -128,6 +138,7 @@ class SeparableBathEvolution:
         cutoff_mode: str = "rel",
         record_rho: bool = False,
         record_every: int = 1,
+        record_time_reads: bool = False,
         compress: bool = True,
         convert=None,
         sub_baths: int | None = None,
@@ -158,6 +169,18 @@ class SeparableBathEvolution:
             Record ``rho_L(T)`` after the recorded sub-baths.
         record_every : int
             Record every ``record_every``-th sub-bath (and always the last).
+        record_time_reads : bool
+            Also produce ``rho_L(t_n)`` at **every physical step** for the final ``L``, from
+            this one fold, via the causal-prefix terminators of
+            :mod:`edmtn.evolution.prefix_reads` -- instead of re-running the whole fold once
+            per target time.  Lands in :attr:`SeparableEvolutionResult.time_density_matrices`.
+            Orthogonal to ``record_rho`` (a different axis); both may be set.  When
+            ``compress`` is also true the compression must be ``'dm_tracking'``, because the
+            terminators have to be carried through every bond-basis change and no other
+            method exposes them; with ``compress=False`` no basis change happens and any
+            otherwise-valid compression configuration is accepted.  Bath-type agnostic: this
+            works for ``'separable'`` (Gaudin) and ``'separable_td'`` (Dicke) alike, since
+            both kernels use the same newest-site ``a_left = 0`` boundary.
         compress : bool
             If ``False``, genuinely SKIP compression after each fold -- exact, with
             exponentially growing bonds (small-``K`` reference checks).  ``True`` compresses
@@ -187,11 +210,18 @@ class SeparableBathEvolution:
         cutoff = validate_nonnegative_finite_float("cutoff", cutoff)
         max_bond = validate_optional_positive_int("max_bond", max_bond)
         record_rho = validate_bool("record_rho", record_rho)
+        record_time_reads = validate_bool("record_time_reads", record_time_reads)
         compress = validate_bool("compress", compress)
         record_every = validate_positive_int("record_every", record_every)
         cutoff_mode = validate_cutoff_mode("cutoff_mode", cutoff_mode)
         validate_compression_combination(
             self.compress_method, self.compress_decomp, self.compress_canon)
+        # dm_tracking exists only to carry the prefix terminators, and the terminators can
+        # only be carried by it -- so the two are tied together, in both directions, before
+        # any tensor is built.  compress=False is exempt: nothing changes the bond basis.
+        validate_time_read_combination(
+            record_time_reads=record_time_reads, compress=compress,
+            compress_method=self.compress_method)
         order = validate_expansion_order("evolution order", self.expander.order)
         # structural model/kernel check: d_phys, matching K, for_sub_bath interface
         K = validate_separable_bath_kernel(model, kernel_engine)
@@ -225,6 +255,10 @@ class SeparableBathEvolution:
         result = SeparableEvolutionResult(mps=None, n_sub_baths=n_fold)
         if record_rho:
             result.density_matrices = []
+        # one (d**2, chi) boundary matrix per PHYSICAL cut; the odd (mid-Strang) cuts are
+        # never created, so nothing downstream can read a half-step by accident
+        terminators = (PrefixTerminators(d * d, n_steps, order, rho0_vec)
+                       if record_time_reads else None)
 
         interval_weight: float | None = 0.0  # max discarded weight since the last recorded L
         for k in range(n_fold):
@@ -232,7 +266,12 @@ class SeparableBathEvolution:
                 convert(s) for s in kernel_engine.for_sub_bath(k).get_kernel_mpo(n_sites).site_tensors
             ]
             mps = mps.fold_raw(mpo_sites)              # lossless MPO x MPS growth
+            if terminators is not None:
+                terminators.fold(mpo_sites)            # l_m <- kron(l_m, e_0), same fused layout
             if compress:                               # compress=False genuinely skips compression
+                # ONE call: 'dm_tracking' dispatch lives in QuimbEDM.compress, so the
+                # method-to-implementation map is in a single place rather than duplicated
+                # here.  terminators is None on every ordinary run.
                 mps = mps.compress(
                     cutoff=cutoff,
                     cutoff_mode=cutoff_mode,
@@ -241,10 +280,12 @@ class SeparableBathEvolution:
                     decomp=self.compress_decomp,
                     decomp_q=self.compress_decomp_q,
                     canon=self.compress_canon,
+                    terminators=terminators,
                 )
+                w = mps.max_discarded_weight
+                result.compression_method_used = self.compress_method
                 # accumulate across the WHOLE interval since the last recorded L, so a
                 # record_every > 1 cannot silently drop the un-recorded folds' truncation
-                w = mps.max_discarded_weight
                 if w is None:
                     interval_weight = None
                 elif interval_weight is not None:
@@ -265,6 +306,10 @@ class SeparableBathEvolution:
 
         # hand back a plain EDMMPS so observable extraction reads per-site tensors
         result.mps = mps.to_edmmps()
+        if terminators is not None:
+            # one right-to-left sweep over the finished chain; the last entry is the very
+            # rho_L(T) that reduced_density_matrix() returns, because l_M is the identity
+            result.time_density_matrices = terminators.read(result.mps.tensors, rho0_vec, d)
         return result
 
     # -- construction ------------------------------------------------------

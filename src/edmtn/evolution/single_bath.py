@@ -31,6 +31,7 @@ import numpy as np
 
 from ..expansion.first_order import FirstOrderExpander
 from ._validation import (
+    validate_time_read_combination,
     validate_bool,
     validate_compression_combination,
     validate_cutoff_mode,
@@ -77,6 +78,8 @@ class EvolutionResult:
     bond_dims: list = field(default_factory=list)
     density_matrices: list | None = None
     truncation_errors: list[float | None] = field(default_factory=list)
+    #: outer compression path actually entered, or ``None`` if none ran
+    compression_method_used: str | None = None
 
 
 class SingleBathEvolution:
@@ -97,7 +100,7 @@ class SingleBathEvolution:
             raise NotImplementedError(
                 f"unsupported expansion order {self.expander.order}"
             )
-        self.compress_method = compress_method         # quimb 1D-compress: 'zipup'|'dm'|'direct'
+        self.compress_method = compress_method         # 'zipup'|'dm'|'direct' ('dm_tracking' is separable-only)
         self.compress_decomp = compress_decomp         # 'exact' | 'rsvd'
         self.compress_decomp_q = compress_decomp_q     # rsvd power iterations
         self.compress_canon = compress_canon           # 'quimb' | 'householder' | 'cholqr'
@@ -167,6 +170,14 @@ class SingleBathEvolution:
         cutoff_mode = validate_cutoff_mode("cutoff_mode", cutoff_mode)
         validate_compression_combination(
             self.compress_method, self.compress_decomp, self.compress_canon)
+        # This engine has no prefix terminators to transport -- it satisfies
+        # record_time_reads with its own per-step recorder -- so 'dm_tracking' is refused
+        # HERE, before the kernel is read or a tensor is built.  Without this the name
+        # travels all the way to QuimbEDM.compress and fails mid-evolution.
+        validate_time_read_combination(
+            record_time_reads=False, compress=compress,
+            compress_method=self.compress_method,
+            requires_tracking=False, supports_tracking=not compress)
         order = validate_expansion_order("evolution order", self.expander.order)
         # structural model/kernel check: d_phys, get_kernel_mpo, and matching order (both ways)
         validate_single_bath_kernel(model, kernel_engine, order)
@@ -208,6 +219,7 @@ class SingleBathEvolution:
                         decomp_q=self.compress_decomp_q,
                         canon=self.compress_canon,
                     )
+                    result.compression_method_used = self.compress_method
                     w = mps.max_discarded_weight
                     if w is None:
                         step_weight = None

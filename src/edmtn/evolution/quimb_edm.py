@@ -195,17 +195,43 @@ class QuimbEDM:
     # -- compression -------------------------------------------------------
 
     def compress(self, *, cutoff, cutoff_mode, method, max_bond,
-                 decomp="exact", decomp_q=2, canon="quimb"):
+                 decomp="exact", decomp_q=2, canon="quimb", terminators=None):
         """Canonicalise + truncate the chain via quimb (cotengra/autoray).
 
         ``decomp`` selects the per-bond decomposition (``'exact'`` full SVD, or
         ``'rsvd'`` randomized with power iterations ``decomp_q`` + silent guard);
         ``canon`` selects the canonicalisation QR (``'quimb'`` default, ``'householder'``,
         ``'cholqr'``).  See :mod:`edmtn.evolution.quimb_decomp`.
+
+        ``method='dm_tracking'`` is the one method quimb does **not** implement: it is the
+        in-repo two-sweep density-matrix compression of
+        :mod:`edmtn.evolution.prefix_reads`, whose per-bond basis changes are handed back so
+        the causal-prefix ``terminators`` can be transported through them.  It is
+        intercepted here, before the quimb call -- ``method`` is otherwise forwarded
+        verbatim, so without this branch the name would leak out as a bare ``KeyError``
+        from quimb's method registry.  The two arguments are required together in both
+        directions.
         """
         # illegal combinations are rejected regardless of chain length -- before the
         # n <= 1 early return, so a direct low-level call can never leak a TypeError
         validate_compression_combination(method, decomp, canon)
+        if (method == "dm_tracking") != (terminators is not None):
+            raise ValueError(
+                "compress_method='dm_tracking' and `terminators` go together: got "
+                f"method={method!r} with terminators="
+                f"{'a PrefixTerminators' if terminators is not None else None}.  The "
+                "tracking sweep exists only to transport the prefix terminators, and the "
+                "terminators can only be transported by it.")
+        if method == "dm_tracking":
+            from .prefix_reads import tracking_compress  # noqa: PLC0415
+
+            edm = self.to_edmmps()
+            edm.tensors, weight = tracking_compress(
+                edm.tensors, terminators,
+                cutoff=cutoff, cutoff_mode=cutoff_mode, max_bond=max_bond)
+            out = QuimbEDM.from_edmmps(edm)
+            out.max_discarded_weight = weight
+            return out
         import quimb.tensor as qtn  # noqa: PLC0415
 
         if self.n <= 1:  # nothing to compress -> a genuine zero, not a stale inherited value

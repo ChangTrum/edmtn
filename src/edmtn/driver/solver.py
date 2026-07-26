@@ -50,7 +50,10 @@ class SolverResult:
         pipeline produces no time-axis reduced-state history.  Single-bath: present whenever the
         evolution recorded reduced states (``record_rho``, custom observables, OR second order --
         the ρ(t) is exposed as-is, not re-hidden).  Track 2: always present (first-class output).
-        **Separable Track 1 (Gaudin AND Dicke): always None** -- their per-``L`` states are
+        **Separable Track 1 (Gaudin AND Dicke):** ``None`` by default; populated by
+        ``record_time_reads=True``, which reads every physical step off ONE fold via the
+        causal-prefix terminators (:mod:`edmtn.evolution.prefix_reads`) and requires
+        ``compress_method='dm_tracking'`` when compressing.  Their per-``L`` states are
         ``rho_L(T)`` (axis = sub-bath count, not time) and live in
         ``sub_bath_final_density_matrices``, never here.
     time_bond_dims : list[int] or None
@@ -110,6 +113,12 @@ class SolverResult:
         ``None`` on Track 2, which has no Layer-5 evolution object.
     error_metrics : dict or None
         Track 2 only: reference error metrics (``‖ρ−ρ†‖`` / ``|Tr ρ−1|`` + optimizer stats).
+    compression_method_used : str or None
+        The outer 1D-compress path actually entered -- ``'zipup'``, ``'direct'``, ``'dm'``
+        or ``'dm_tracking'``.  ``None`` when no compression ran, or on Track 2.  It does
+        **not** report the per-bond decomposition: ``compress_decomp='rsvd'`` carries a
+        silent per-bond guard that falls back to the exact full SVD, so one run can mix the
+        two and a single string could not describe it.
     """
 
     times: object
@@ -131,6 +140,7 @@ class SolverResult:
     final_time_bond_dims: object = None              # final EDM-MPS internal bonds along the time chain
     sub_baths_used: int | None = None                # actual number of sub-baths folded (None if N/A)
     final_density_matrix: object = None              # reduced state at the end of the solve (all pipelines)
+    compression_method_used: str | None = None       # outer 1D-compress path entered (see docstring)
 
     @property
     def max_bond(self) -> int:
@@ -311,7 +321,10 @@ class EDMSolver:
         # the efficient Eq.-F2 sweep is first-order specific; second order reads
         # the coupling polarization from the recorded reduced states instead.
         second_order = cfg.expansion_order == 2
-        need_rho = cfg.record_rho or bool(observables) or second_order
+        # record_time_reads is a generic "give me rho(t)" request; this pipeline already
+        # has a per-step recorder, so it needs no prefix machinery -- just turn it on.
+        need_rho = (cfg.record_rho or bool(observables) or second_order
+                    or cfg.record_time_reads)
         ev = self.evolution.run(
             self.model,
             self.kernel_engine,
@@ -359,6 +372,7 @@ class EDMSolver:
             time_bond_dims=ev.bond_dims,                   # max bond per physical time step
             final_time_bond_dims=ev.mps.bond_dims,         # final MPS internal bonds along time
             final_density_matrix=_final_reduced_state(ev.mps, ev.density_matrices),
+            compression_method_used=ev.compression_method_used,
         )
 
     # -- hpc track (cuQuantum 2D one-shot contraction) --------------------
@@ -406,7 +420,8 @@ class EDMSolver:
         ``D_L`` on ``result.sub_bath_bond_dims``, ``rho_L(T)`` on
         ``result.sub_bath_final_density_matrices`` (when ``record_rho``), and the final
         EDM-MPS's per-time internal bonds ``D_t`` (Fig. 6b) on ``result.final_time_bond_dims``.
-        There is no time-axis ``rho(t)`` history, so ``result.density_matrices`` is ``None``.
+        ``result.density_matrices`` is ``None`` unless ``record_time_reads=True``, which fills the
+        time axis from this same fold (:mod:`edmtn.evolution.prefix_reads`).
         """
         if observables:
             raise NotImplementedError(
@@ -425,6 +440,7 @@ class EDMSolver:
             cutoff=cfg.cutoff,
             cutoff_mode=cfg.cutoff_mode,
             record_rho=cfg.record_rho,
+            record_time_reads=cfg.record_time_reads,
             sub_baths=cfg.sub_baths,
             convert=convert,
             memory=memory,
@@ -458,13 +474,16 @@ class EDMSolver:
             mps=ev.mps,
             evolution=ev,
             backend=backend_label,
-            # density_matrices stays None: the per-L states below are rho_L(T), not rho(t)
+            # the TIME axis (None unless record_time_reads); the per-L states below are
+            # rho_L(T), a different axis, and stay in sub_bath_final_density_matrices
+            density_matrices=ev.time_density_matrices,
             sub_bath_counts=ev.recorded_L,
             sub_bath_bond_dims=ev.bond_dims,
             sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
             final_time_bond_dims=ev.mps.bond_dims,
             sub_baths_used=ev.n_sub_baths,                         # actual L folded (== validate_sub_baths)
             final_density_matrix=final_rho,                        # rho_L(T) for L = sub_baths_used
+            compression_method_used=ev.compression_method_used,
         )
 
     # -- time-dependent separable bath (Dicke) ----------------------------
@@ -480,9 +499,11 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
         rotating ``S(t)`` the operator and the state sit at different times.  Defining and
         validating that alignment for a time-dependent coupling is separate work, not done
         here -- so no history is published rather than one whose time axis is not
-        established.  ``polarization`` is therefore ``None``, and ``density_matrices`` is
-        ``None`` too (the per-``L`` states are ``rho_L(T)``, indexed by sub-bath count,
-        not by time).
+        established.  ``polarization`` is therefore ``None``.  ``density_matrices`` is ``None``
+        **by default** and is filled by ``record_time_reads=True``, which reads the time
+        axis off this same fold (:mod:`edmtn.evolution.prefix_reads`); the per-``L`` states
+        are a different axis (``rho_L(T)``, indexed by sub-bath count) and stay in
+        ``sub_bath_final_density_matrices``.
         Everything else is the standard separable contract, plus
         ``final_density_matrix`` -- so a default solve still returns a physical state.
         """
@@ -503,6 +524,7 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
             cutoff=cfg.cutoff,
             cutoff_mode=cfg.cutoff_mode,
             record_rho=cfg.record_rho,
+            record_time_reads=cfg.record_time_reads,
             sub_baths=cfg.sub_baths,
             convert=convert,
             memory=memory,
@@ -517,13 +539,16 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
             mps=ev.mps,
             evolution=ev,
             backend=backend_label,
-            # density_matrices stays None: the per-L states below are rho_L(T), not rho(t)
+            # the TIME axis (None unless record_time_reads); the per-L states below are
+            # rho_L(T), a different axis, and stay in sub_bath_final_density_matrices
+            density_matrices=ev.time_density_matrices,
             sub_bath_counts=ev.recorded_L,
             sub_bath_bond_dims=ev.bond_dims,
             sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
             final_time_bond_dims=ev.mps.bond_dims,
             sub_baths_used=ev.n_sub_baths,
             final_density_matrix=_final_reduced_state(ev.mps, ev.density_matrices),
+            compression_method_used=ev.compression_method_used,
         )
 
     # -- convergence helpers ----------------------------------------------

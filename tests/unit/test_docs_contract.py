@@ -49,10 +49,13 @@ def test_readme_gaudin_example_runs_and_fields_exist():
                   "sub_bath_bond_dims", "sub_bath_final_density_matrices", "time_bond_dims",
                   "final_time_bond_dims", "truncation_errors", "sub_baths_used",
                   "expansion_order", "observables", "error_metrics", "backend", "mps",
+                  "compression_method_used",
                   "evolution", "bond_dims", "max_bond"):
         assert hasattr(res, field), field
     # ... with the documented axes
-    assert res.density_matrices is None                      # Gaudin Track 1: never a rho(t)
+    # Gaudin Track 1: no rho(t) BY DEFAULT -- record_time_reads populates it (the guide
+    # says "None by default", not "never", since the causal-prefix reads landed)
+    assert res.density_matrices is None
     assert len(res.sub_bath_bond_dims) == len(res.sub_bath_counts)
     assert len(res.truncation_errors) == len(res.sub_bath_counts)
     assert res.sub_baths_used == 3

@@ -305,7 +305,7 @@ work, whose correctness argument does not depend on it.
 
 ## 7. Implementation plan
 
-Nothing below is built yet. The plan is stated at the level the code would be written at.
+**Implemented.** This section was the plan; it now describes what is in the tree. The acceptance tests of section 7.4 live in `tests/unit/test_prefix_time_reads.py`.
 
 **Scope.** Opt-in, and **generic over separable bath types by construction, not
 Dicke-specific**. `SeparableBathEvolution` already serves both `bath_type='separable'`
@@ -405,26 +405,38 @@ combination check runs *after* preset resolution — which is why `dm` + those p
 today. `dm_tracking` gains that protection **only once it is added to the same validator**;
 it is not inherited automatically, and the change is not complete until it is.
 
-**Truncation semantics.** `dm_tracking` is specified as **behaviourally identical to the
-existing `dm` path**, not as a re-derivation of it. The dm path applies quimb's trimming to
-the eigenvalues `lambda = sigma^2` directly, so the per-mode arithmetic of `abs`, `rel`,
+**Truncation semantics.** `dm_tracking` **shares the `dm` path's rank-selection policy on a
+supplied eigenvalue spectrum** — it is not behaviourally identical to it end to end, and
+must not be described that way. Both feed the non-negative eigenvalues
+`lambda = sigma^2` to quimb's own trimming, so the per-mode arithmetic of `abs`, `rel`,
 `sum1`, `rsum1`, `sum2`, `rsum2` is quimb's and is deliberately **not restated here** —
-restating it would be a second source of truth and a place to be wrong. The specification is
-the test, mode by mode for all six. Any mode that cannot be matched must be rejected at
-entry, never silently remapped.
+restating it would be a second source of truth and a place to be wrong. What differs is the
+*environment*: quimb's `dm` builds its left environments from the original chain, while the
+tracking sweep canonicalises first and updates them with the truncated tensors. Two
+variants of one algorithm, and there is no reason for their outputs to coincide.
 
-That test must compare **gauge-invariant** quantities. An eigendecomposition fixes its
-eigenvectors only up to a phase, and up to an arbitrary rotation inside any degenerate
-subspace, so two decompositions that are physically identical can differ element by element.
-The comparison is therefore: a deliberately **non-degenerate** known spectrum, and equality
-of
+The contract is therefore about the policy, not the trajectory:
 
-* the retained rank,
-* the projector onto the retained subspace, `V V^dag`,
-* the discarded weight,
-* the final contracted result.
+* on a deliberately **non-degenerate** known spectrum, the retained rank and the discarded
+  weight match `dm` for each of the six `CUTOFF_MODES`;
+* at `cutoff = 0`, `max_bond = None` the sweep is verified to be **no-discard numerically
+  equivalent** to an uncompressed run — and *not* required to reach the same bond dimension
+  as quimb's `dm`, which it does not (the LQ sweep reduces losslessly to the Schmidt rank
+  first);
+* raw eigenvectors and un-gauge-fixed tensor elements are never compared: an
+  eigendecomposition fixes its eigenvectors only up to a phase and up to rotations inside a
+  degenerate subspace.
 
-Raw eigenvectors, or un-gauge-fixed tensor elements, must **not** be the contract.
+Any mode that cannot be matched at the policy level must be rejected at entry, never
+silently remapped.
+
+End-to-end accuracy is verified **independently**, against an uncompressed reference, with
+pre-registered absolute bounds per configuration — not by an inequality against `dm`. There
+is no general relation between two algorithms' mutual difference and their individual
+errors, and `cutoff` is a local spectral rule rather than a bound on the final density
+matrix (with six modes whose dimensions differ), so "closer to each other than the
+requested tolerance" would be an observation dressed up as a contract. A `dm`
+side-by-side table is worth keeping as a **diagnostic**, and is not an API guarantee.
 
 **Truncation reporting.** Each tracking sweep reports `max_b sum_i discarded lambda_i`, the
 same discarded-weight definition `_TruncationAccumulator("discarded_weight")` already
@@ -456,7 +468,7 @@ that the field summarises "the algorithm", which it cannot.
 | `evolution/separable_bath.py` | `run(..., record_time_reads=False)`; when set, initialise `l_{qn} = I` for `n = 1..N`, apply the `kron` after each `fold_raw`, route compression through the tracking sweep, do the read sweep, fill `time_density_matrices` |
 | `evolution/quimb_edm.py` | **intercept `dm_tracking` in `compress()` before the `tensor_network_1d_compress` call** and route it to the in-repo sweep; keep every existing path byte-for-byte |
 | `evolution/_validation.py` | extend `validate_compression_combination` for the new method; the `record_time_reads` / method / `compress` compatibility matrix of §7.2 |
-| `driver/solver.py`, `driver/auto_config.py` | add `dm_tracking` to `_COMPRESS_METHODS`; plumb the flag; wire `SolverResult.density_matrices = ev.time_density_matrices`; add `compression_method_used`; reject `record_time_reads` on the single-bath and `hpc` pipelines |
+| `driver/solver.py`, `driver/auto_config.py` | add `dm_tracking` to `_COMPRESS_METHODS`; plumb the flag; wire `SolverResult.density_matrices = ev.time_density_matrices`; add `compression_method_used`; satisfy `record_time_reads` on single-bath by forcing `need_rho=True`, and on Track 2 from the `rho(t)` it already produces (§7.2) |
 | `models/dicke.py` | nothing |
 
 **Further constraints.** The sweep must be array-module agnostic (the `_xp` helper in
@@ -486,14 +498,21 @@ Each must be able to fail for the right reason:
    `density_matrices`; and on **Track 2** it is accepted, not refused.
 9. Incompatible compression configurations — including the preset-driven `rsvd` route, and
    `dm_tracking` with `record_time_reads=False` — raise `ValueError` before any tensor is
-   constructed.
-10. `dm_tracking` matches the existing `dm` path on a deliberately **non-degenerate** known
-    spectrum, for each of the six `CUTOFF_MODES`, on the retained rank, the projector
-    `V V^dag`, the discarded weight and the final contracted result — **not** on raw
-    eigenvectors or un-gauge-fixed tensor elements.
-11. Terminator transport verified separately in the no-discard case, the truncated case,
+   constructed. `method='dm_tracking'` never reaches quimb's method registry.
+10. **Policy equivalence.** On a deliberately non-degenerate known spectrum, `dm_tracking`
+    and `dm` keep the same rank and report the same discarded weight, for each of the six
+    `CUTOFF_MODES`. Raw eigenvectors and un-gauge-fixed tensor elements are not compared,
+    and equal bond dimension at `cutoff = 0` is **not** required.
+11. **End-to-end accuracy, verified independently of `dm`.** At `cutoff = 0`,
+    `max_bond = None` the reads match an uncompressed reference to machine precision; for a
+    fixed, deterministic set of loose and tight configurations each has its own
+    **pre-registered absolute error bound** against that reference; every truncating case
+    asserts that truncation actually happened (finite positive discarded weight), that
+    trace and hermiticity hold to a stated tolerance, and there is a separate case where
+    `max_bond` rather than `cutoff` is the binding constraint.
+12. Terminator transport verified separately in the no-discard case, the truncated case,
     and on the CuPy backend (GPU-gated).
-12. `compression_method_used` shows `dm_tracking` when that branch ran, and the truncation
+13. `compression_method_used` shows `dm_tracking` when that branch ran, and the truncation
     metric is the requested-independent measured one.
 
 ### 7.5 Consumers
@@ -542,8 +561,8 @@ the prose only; it does not touch what was measured.
 |---|---|
 | `e_0^T A_{k,g}^{0} = e_0^T`, dissipative bath, `q = 1, 2`, all `g`, all `k` | `0.0` exactly |
 | ... and the same for `phi = 1, 2` (must fail) | deviation `1.0` |
-| tensor level: `T = N eps` transfer tensors and sample times vs shorter production builds, on every shared `g` | `0.0` exactly |
-| tensor level: `M`-site kernel sites sliced at `a_left = 0` vs the shorter production builds' sites | `0.0` exactly |
+| the per-site tensors depend only on `g`: `T = N eps` arrays and sample times vs shorter production builds, on every shared `g` | `0.0` exactly |
+| the `a_left = 0` slice: `M`-site kernel sites so sliced vs the shorter production builds' sites | `0.0` exactly |
 | quimb `fuse_multibonds` order | `(v outer, a inner)`; the other order deviates by `8.5` |
 | run level: prefix reads at `m = q n` vs `N` independent uncompressed runs of `n` physical steps, `q = 1, 2`, `K = 1, 2, 3`, closed and dissipative | `<= 1.7e-15` |
 | lossless recompression + transported terminators vs uncompressed | `8.0e-11` |
@@ -586,8 +605,9 @@ an uncompressed run also contains floating-point, LQ/eigh and re-normalisation e
 is what the `8.0e-11` no-discard figure in section 8 measures. That the intermediate reads
 inherit the final-time error bound — they do not (section 6). That the multi-time
 environment forces every terminator into the retained subspace, or is a free improvement —
-it is a reweighting and a rebalancing (section 6). That any of this is implemented — it is
-not (section 7).
+it is a reweighting and a rebalancing (section 6), and it is deliberately **not**
+implemented. That `dm_tracking` reproduces quimb's `dm` trajectory — it shares that path's
+rank-selection policy and nothing more (section 7.2).
 
 **Unchanged.** The EDM derivation, the transfer tensors, the picking tensor, the Kraus
 channels, the second-order discretisation of

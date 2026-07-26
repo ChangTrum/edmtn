@@ -22,7 +22,10 @@ from ..kernels.gaussian_mpo import GaussianKernelEngine
 from ..kernels.separable_mpo import SeparableKernelEngine
 from ..kernels.separable_td_mpo import SeparableTDKernelEngine
 from ..evolution._validation import CUTOFF_MODES as _CUTOFF_MODES
-from ..evolution._validation import validate_compression_combination
+from ..evolution._validation import (
+    validate_compression_combination,
+    validate_time_read_combination,
+)
 from ..evolution.separable_bath import SeparableBathEvolution
 from ..evolution.single_bath import SingleBathEvolution
 
@@ -42,7 +45,10 @@ _BACKENDS = ("cpu", "numpy", "gpu", "cupy", "hpc")   # solver._resolve_backend +
 _PRECISIONS = ("f64", "mixed")                        # solver._resolve_backend
 # _CUTOFF_MODES is imported from evolution._validation (single source of truth shared with
 # the direct evolution run() entry points, so the driver/direct contracts cannot drift).
-_COMPRESS_METHODS = ("zipup", "dm", "direct")         # EDMTN's tested subset of quimb 1D-compress
+# EDMTN's tested subset of quimb 1D-compress, plus the one method quimb does NOT provide:
+# 'dm_tracking' is intercepted in QuimbEDM.compress and served by the in-repo two-sweep
+# that exposes its per-bond basis changes (edmtn.evolution.prefix_reads).
+_COMPRESS_METHODS = ("zipup", "dm", "direct", "dm_tracking")
 _COMPRESS_DECOMPS = ("exact", "rsvd")                 # quimb_decomp.compress_opts_for
 _COMPRESS_CANONS = ("quimb", "householder", "cholqr")  # quimb_decomp._CANON_METHOD
 _PATHFINDERS = ("cuquantum", "cotengra")              # cutensornet path-finder select
@@ -174,6 +180,18 @@ class SolverConfig:
     record_rho : bool
         Store ``rho(t)`` at every step.  Strictly a ``bool``.  Note some paths record
         ``rho(t)`` regardless (second-order spin-boson, custom observables).
+    record_time_reads : bool
+        Populate ``SolverResult.density_matrices`` with the ``rho(t)`` time axis.  A generic
+        request -- each pipeline satisfies it its own way: single-bath Track 1 turns on its
+        existing per-step recording, Track 2 already produces the history, and separable
+        Track 1 uses the causal-prefix terminators
+        (:mod:`edmtn.evolution.prefix_reads`) to read every physical step off ONE fold
+        instead of re-running the whole fold once per target time.  On the separable
+        pipelines that needs ``compress_method='dm_tracking'``.  Only the bath-type
+        independent half of that rule is checked here (``'dm_tracking'`` is pointless
+        without the flag); the half that *requires* it is enforced by
+        ``SeparableBathEvolution.run``, and ``SingleBathEvolution.run`` refuses the method
+        outright -- those are the entry points that know which engine is running.
     precision : str
         ``'f64'`` (default) or ``'mixed'``.  ``'mixed'`` currently casts the Track-1
         contraction tensors to the f32/complex64 path; the declared f64 decomposition
@@ -212,7 +230,8 @@ class SolverConfig:
     max_bond: int | None = None
     expansion_order: int | None = None  # None -> inherit the model's time_step_order
     record_rho: bool = False
-    compress_method: str = "zipup"        # 'zipup'|'dm'|'direct' (quimb 1D-compress; N/A under backend='hpc')
+    record_time_reads: bool = False
+    compress_method: str = "zipup"        # 'zipup'|'dm'|'direct'|'dm_tracking' (N/A under backend='hpc')
     compress_decomp: str = "exact"        # cpu/gpu: 'exact'|'rsvd' (N/A under 'hpc': Track 2 is exact-only, no truncation)
     compress_decomp_q: int = 2            # rsvd power iterations (2=cold, 0=single-pass; N/A under 'hpc')
     compress_canon: str = "quimb"         # 'quimb'|'householder'|'cholqr' (canon QR; N/A under 'hpc')
@@ -252,6 +271,8 @@ class SolverConfig:
                     f"expansion_order must be None or the integer 1 or 2, got {self.expansion_order!r}")
             _set("expansion_order", int(self.expansion_order))
         _set("record_rho", _boolean("record_rho", self.record_rho))
+        _set("record_time_reads",
+             _boolean("record_time_reads", self.record_time_reads))
         _set("compress_method", _choice("compress_method", self.compress_method, _COMPRESS_METHODS))
         _set("compress_decomp", _choice("compress_decomp", self.compress_decomp, _COMPRESS_DECOMPS))
         _set("compress_decomp_q", _nonnegative_int("compress_decomp_q", self.compress_decomp_q))
@@ -286,6 +307,16 @@ class SolverConfig:
         if self.backend != "hpc":
             validate_compression_combination(
                 self.compress_method, self.compress_decomp, self.compress_canon)
+            # Only the universal half here: 'dm_tracking' is pointless without
+            # record_time_reads, whatever the model.  The converse -- that time reads NEED
+            # 'dm_tracking' -- holds for the separable engines only, and this config does
+            # not know the bath type; single-bath Track 1 satisfies the same request with
+            # its existing per-step recorder.  SeparableBathEvolution.run enforces that half,
+            # where the bath type is known.  Placed after preset resolution so a
+            # preset-driven 'rsvd' is already visible to validate_compression_combination.
+            validate_time_read_combination(
+                record_time_reads=self.record_time_reads, compress=True,
+                compress_method=self.compress_method, requires_tracking=False)
 
     @property
     def n_steps(self) -> int:
@@ -365,6 +396,14 @@ def build_pipeline(model, config: SolverConfig):
 
 
 def _build_gaussian(model, config: SolverConfig):
+    # First statement, before the kernel exists: this engine has no prefix terminators, so
+    # 'dm_tracking' is not implementable here.  The same check guards
+    # SingleBathEvolution.run for callers that bypass the driver; this one keeps the
+    # promise that the driver refuses *before* building a pipeline.
+    validate_time_read_combination(
+        record_time_reads=config.record_time_reads, compress=True,
+        compress_method=config.compress_method,
+        requires_tracking=False, supports_tracking=False)
     kernel_engine = GaussianKernelEngine.from_model(
         model, T=config.T, eps=config.eps, order=config.expansion_order
     )

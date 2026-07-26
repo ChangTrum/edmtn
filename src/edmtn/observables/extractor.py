@@ -32,6 +32,29 @@ from ..evolution.mps_utils import _xp
 # order 1e-6 relative even at strong coupling/long time, so the guard only flags
 # *gross* leakage (a wrong index/convention gives an imaginary part O(1)).
 _IMAG_REL_TOL = 1e-3
+# ... and an absolute floor, because the relative rule is vacuous on a channel whose whole
+# history is zero (channels 1/2 can be, exactly, by symmetry): there `values` is pure
+# roundoff, whose imaginary part is no smaller than its real part.  The absolute term
+# dominates when `_IMAG_REL_TOL * real_max < _IMAG_ABS_TOL`, i.e. `real_max < 1e-9`.
+_IMAG_ABS_TOL = 1e-12
+
+
+def _check_imaginary_part(values) -> None:
+    """Raise unless ``values`` is real to within the guard, else return.
+
+    A module-level helper rather than an inline expression so the tests exercise the
+    SHIPPED rule: a copy of the formula in the test file would keep passing even if this
+    guard were deleted outright.
+    """
+    imag_max = float(np.max(np.abs(values.imag)))
+    real_max = float(np.max(np.abs(values.real)))
+    threshold = max(_IMAG_ABS_TOL, _IMAG_REL_TOL * real_max)
+    if imag_max > threshold:
+        raise ValueError(
+            f"coupling polarization has a non-negligible imaginary part: "
+            f"max|Im| = {imag_max:.3e} > threshold {threshold:.3e} "
+            f"(max|Re| = {real_max:.3e}, rel_tol = {_IMAG_REL_TOL:.1e}, "
+            f"abs_tol = {_IMAG_ABS_TOL:.1e})")
 
 
 def _vec_identity(d, like):
@@ -130,8 +153,19 @@ class ObservableExtractor:
                     times[m - 1] = m * eps
                     values[m - 1] = coeff * complex(_scalar(val))
 
-        if np.max(np.abs(values.imag)) > _IMAG_REL_TOL * (np.max(np.abs(values.real)) + 1e-12):
-            raise ValueError("coupling polarization has a non-negligible imaginary part")
+        # Absolute OR relative, whichever is larger.  The relative part catches a genuine
+        # selector/index leak on an O(1) trajectory; the absolute floor is what makes the
+        # test meaningful when the channel's whole history is zero or near-zero (which
+        # channels 1/2 can be exactly, by symmetry).  There, `values` is pure roundoff with
+        # no reason for its imaginary part to be smaller than its real part, so a purely
+        # relative rule degenerates into comparing noise with noise: the previous
+        # `rel * (real_max + 1e-12)` form left a 1e-15 floor, which a compression carrying
+        # slightly more arithmetic could cross while agreeing with an uncompressed run to
+        # 9e-16 on every gauge-invariant contraction (measured: `dm_tracking` 3.2e-15 vs
+        # `zipup` 9.2e-17 on an identically-zero Gaudin channel).  1e-12 keeps ~300x margin
+        # over that measured spread and stays far below the O(1) scale of the non-zero
+        # trajectories this guard exists to police.
+        _check_imaginary_part(values)
         return times, values.real
 
     # -- history from recorded reduced states (general operator) -----------

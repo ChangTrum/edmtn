@@ -225,8 +225,58 @@ def validate_compression_combination(method, decomp, canon) -> None:
     construction; ``QuimbEDM.compress()`` rejects it before any compression work or
     the ``n <= 1`` early return.
     """
-    if method == "dm" and (decomp != "exact" or canon != "quimb"):
+    if method in ("dm", "dm_tracking") and (decomp != "exact" or canon != "quimb"):
         raise ValueError(
-            "compress_method='dm' supports only compress_decomp='exact' with "
+            f"compress_method={method!r} supports only compress_decomp='exact' with "
             f"compress_canon='quimb'; got compress_decomp={decomp!r}, "
             f"compress_canon={canon!r}")
+
+
+def validate_time_read_combination(*, record_time_reads, compress, compress_method,
+                                   requires_tracking: bool = True,
+                                   supports_tracking: bool | None = None) -> None:
+    """Tie ``record_time_reads`` and ``compress_method='dm_tracking'`` together, both ways.
+
+    ``dm_tracking`` is not a quimb method: it is the in-repo two-sweep compression whose
+    per-bond basis changes are exposed so the causal-prefix terminators can be transported
+    through them (:mod:`edmtn.evolution.prefix_reads`).  That gives two obligations, and
+    both are checked here -- at the entry point, before any tensor is built:
+
+    * time reads with compression **need** it, because no other method hands the basis
+      changes back and silently substituting one would change the user's compression;
+    * it is **only** useful for that, so requesting it on its own is refused rather than
+      quietly grown into a fourth general-purpose compressor with no test coverage of its
+      own.
+
+    ``compress=False`` is exempt in the first direction: no compression runs, so no bond
+    basis changes and only the fold-time ``kron`` is needed.  The other configuration
+    checks still apply there -- "any method" means any *otherwise valid* one.
+
+    ``requires_tracking`` selects which obligations apply, and exists because the two are
+    **not** equally universal.  ``record_time_reads`` is a generic "populate ``rho(t)``"
+    request that every pipeline honours its own way -- single-bath Track 1 just turns on its
+    per-step recorder, Track 2 already produces the history -- and only the separable engines
+    need the prefix terminators.  So a config-level check that does not know the bath type
+    must pass ``requires_tracking=False`` and enforce only the second obligation, which is
+    universal; the separable engine passes ``True`` and enforces both.  Enforcing the first
+    everywhere would refuse a perfectly valid single-bath request.
+    """
+    tracking = compress_method == "dm_tracking"
+    if tracking and supports_tracking is False:
+        raise ValueError(
+            "compress_method='dm_tracking' is only implemented by the separable-bath "
+            "engine, which is the one that carries prefix terminators; this pipeline "
+            "satisfies record_time_reads with its own per-step recorder.  Use "
+            "'zipup', 'dm' or 'direct'.")
+    if requires_tracking and record_time_reads and compress and not tracking:
+        raise ValueError(
+            "record_time_reads=True with compress=True needs "
+            f"compress_method='dm_tracking', got {compress_method!r}: the prefix "
+            "terminators have to be carried through every bond-basis change, and no other "
+            "compression method reports them.  Either select 'dm_tracking' or run with "
+            "compress=False.")
+    if tracking and not record_time_reads:
+        raise ValueError(
+            "compress_method='dm_tracking' is only for record_time_reads=True; it exists to "
+            "transport the causal-prefix terminators and is not a general-purpose "
+            "compressor.  Use 'dm' for an ordinary density-matrix compression.")
