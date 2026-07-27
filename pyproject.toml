@@ -7,7 +7,7 @@ name = "edmtn"
 version = "0.0.1"
 description = "Extended Density Matrix tensor-network solver for open quantum systems"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "BSD-3-Clause" }
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
