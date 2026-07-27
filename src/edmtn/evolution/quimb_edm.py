@@ -261,8 +261,26 @@ class QuimbEDM:
         #                  eigh driver takes no `info`, so it needs our adapter => TOP-LEVEL info
         #    rSVD is deliberately NOT measured: rand_linalg.rsvd never sees the tail of the
         #    spectrum it omitted, so any "error" it could report would silently under-count.
+        #
+        # -- when nothing CAN be discarded, do not ask for the metric at all ------------
+        # ``cutoff = 0`` with ``max_bond = None`` gives quimb ``truncation = False``
+        # (``parse_split_opts``), and an ``absorb`` of left/right then resolves
+        # ``method='auto'`` to **qr** rather than svd (``parse_method_absorb``).  A QR takes
+        # no ``info``, so injecting one is both meaningless and, on some backends, fatal:
+        # ``qr_stabilized`` forwards ``**kwargs`` straight into ``xp.linalg.qr``, which
+        # raises ``TypeError: qr() got an unexpected keyword argument 'info'`` on CuPy.  It
+        # survives on NumPy only by accident -- ``qr_stabilized_numpy`` drops ``**kwargs``
+        # for 2-d input on its way to the numba kernel -- so this was a real CPU/GPU
+        # divergence, not a GPU-only quirk.
+        #
+        # The discarded weight in this regime is not merely small, it is exactly ``0.0``:
+        # no cutoff and no rank limit means nothing is dropped.  So report that constant
+        # and skip the accumulator.  ``max_bond`` being set is NOT covered -- a rank limit
+        # truncates even at ``cutoff = 0``, and there the real metric must still be
+        # collected.  ``rsvd`` is excluded too, keeping its documented ``None``.
+        known_lossless = decomp == "exact" and cutoff == 0.0 and max_bond is None
         acc = None
-        if decomp == "exact":
+        if decomp == "exact" and not known_lossless:
             if method == "dm":
                 copts["method"] = register_eigh_metric_driver()
                 acc = _TruncationAccumulator("discarded_weight")
@@ -273,6 +291,9 @@ class QuimbEDM:
             elif method == "direct":
                 acc = _TruncationAccumulator("error")
                 copts["compress_opts"] = {"info": acc}
+        elif known_lossless and method == "dm":
+            # keep the same eigh driver so the numerical path is untouched; just no info
+            copts["method"] = register_eigh_metric_driver()
         if copts:
             opts["compress_opts"] = copts
 
@@ -280,8 +301,14 @@ class QuimbEDM:
             self.tn, max_bond=max_bond, cutoff=cutoff, method=method,
             site_tags=[f"I{p}" for p in range(self.n)], permute_arrays=False,
             cutoff_mode=cutoff_mode, optimize="auto", **opts)
+        if acc is not None:
+            weight = acc.max_weight
+        elif known_lossless:
+            weight = 0.0          # nothing could be discarded; not "unmeasurable"
+        else:
+            weight = None         # rsvd: the omitted tail was never seen, so no honest value
         return QuimbEDM(cq, self.n, self.d, self.d_phys, self.rho0_vec, meta=self.meta,
-                        max_discarded_weight=(acc.max_weight if acc is not None else None))
+                        max_discarded_weight=weight)
 
     # -- single-bath step (one new time-site, Eq. 8) -----------------------
 
