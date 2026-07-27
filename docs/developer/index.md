@@ -25,6 +25,7 @@ current performance guarantees.
 ../design/phase0-replatform-decisions
 ../design/multi-gpu-cuquantum-design
 ../design/dicke-second-order-discretisation
+../design/dicke-observable-extraction
 ../design/causal-prefix-time-reads
 ```
 
