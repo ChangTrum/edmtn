@@ -36,7 +36,17 @@ discarded weight).
   the exact decomposition it uses a density-matrix **eigendecomposition**,
   not an SVD: the split object is `ρ`, whose eigenvalues are `λ = σ²` —
   which is why the dm path measures the discarded weight as
-  `Σ λ_discarded` (see {doc}`results`).
+  `Σ λ_discarded` (see {doc}`results`);
+- `dm_tracking` — **not a quimb method**. An in-repo two-sweep
+  compression (LQ from the oldest end, then the density-matrix isometry)
+  that hands each bond's basis change back so the causal-prefix
+  terminators can be transported through it. It shares `dm`'s
+  rank-selection policy — the same discarded weight is measured the same
+  way — but not its sweep, so it is a *different* trajectory and must
+  never be described as equivalent to `dm`. It is accepted only together
+  with `record_time_reads=True`, and only on the separable engines;
+  requesting either one without the other raises `ValueError` at the
+  entry point. See {doc}`../design/causal-prefix-time-reads`.
 
 ## Decompositions and the resolution guard
 
@@ -76,6 +86,7 @@ ignored-field behaviour there:
 | `zipup` | `exact`, `rsvd` | `quimb`, `householder`, `cholqr` |
 | `direct` | `exact`, `rsvd` | `quimb`, `householder`, `cholqr` |
 | `dm` | `exact` only | `quimb` only |
+| `dm_tracking` | `exact` only | `quimb` only |
 
 quimb's `dm` path reaches the split with PSD-split keywords and forwards
 canonicalisation options into it; only the exact eigendecomposition

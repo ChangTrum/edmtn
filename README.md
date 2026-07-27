@@ -45,6 +45,10 @@ paper-scale configuration (`K=49`, `T=15`) see
 - **Observables out of the box** — `⟨S_z(t)⟩` (or any coupling channel), `ρ(t)`
   (where the pipeline exposes it — see the result table), bond-dimension growth,
   a real truncation metric, and convergence checks.
+- **`ρ(t)` at every step, from one run** — opt in with `record_time_reads=True` and
+  the separable pipelines (Gaudin *and* Dicke) hand back the whole time axis off a
+  **single** fold instead of one run per target time. Off by default, and the default
+  solve is unchanged — see **[ρ(t) on a separable bath](#ρt-on-a-separable-bath-gaudin-and-dicke)**.
 
 ## Install
 
@@ -93,7 +97,7 @@ reach into `res.evolution.*`:
 |---|---|---|
 | `res.times` | time | `[eps, 2 eps, …, T]` |
 | `res.polarization` | ∥ `times` | `⟨S_channel(t)⟩` (pick `channel=`), or `None` on a pipeline that publishes none (Dicke/`separable_td`) |
-| `res.density_matrices` | ∥ `times` | `ρ(t)`, or `None`. Track 2: always present. Spin-boson: present whenever reduced states were recorded — `record_rho=True`, custom observables, **or second order** (which needs them anyway). **Separable Track 1 (Gaudin *and* Dicke): always `None`** — see the next rows |
+| `res.density_matrices` | ∥ `times` | `ρ(t)`, or `None`. Track 2: always present. Spin-boson: present whenever reduced states were recorded — `record_rho=True`, custom observables, **or second order** (which needs them anyway). **Separable Track 1 (Gaudin *and* Dicke): `None` by default**, filled by `record_time_reads=True` — see [ρ(t) on a separable bath](#ρt-on-a-separable-bath-gaudin-and-dicke). Their per-`L` states are a *different* axis and live two rows down |
 | `res.final_density_matrix` | — | the reduced state at the end of the solve, on **every** pipeline and without `record_rho`; backend-native array. Separable: `ρ_L(T)` for `L = sub_baths_used` |
 | `res.sub_bath_counts` | fold `L` | separable Track 1 (Gaudin, Dicke): the recorded sub-bath counts |
 | `res.sub_bath_bond_dims` | ∥ `sub_bath_counts` | separable Track 1 (Gaudin, Dicke): `D_L` after folding in `L` sub-baths |
@@ -108,6 +112,47 @@ reach into `res.evolution.*`:
 | `res.backend` | — | the device/track that **actually** ran (a failed GPU request shows as `cpu/... (fallback: …)`) |
 | `res.mps` / `res.evolution` | — | the final EDM-MPS / raw Layer-5 output; **both `None` on Track 2** |
 | `res.bond_dims`, `res.max_bond` | pipeline axis | *legacy* alias: `time_bond_dims` on single-bath, `sub_bath_bond_dims` on separable, `[]` on Track 2. Prefer the axis-explicit fields above |
+
+### ρ(t) on a separable bath (Gaudin and Dicke)
+
+A separable solve folds the sub-baths one at a time, so the natural output is a single
+final state `ρ(T)`. Getting a *time axis* used to mean re-running the whole fold once per
+target time — `N` runs for `N` points. `record_time_reads=True` reads **every physical
+step off one fold** instead, by carrying a causal-prefix terminator alongside the
+compression:
+
+```python
+from edmtn.driver import solve
+from edmtn.models import DickeModel
+
+res = solve(DickeModel(K=4, n_fock=6, coupling=0.5), T=1.0, eps=0.1,
+            record_time_reads=True, compress_method='dm_tracking', cutoff=1e-8)
+
+res.times                 # [eps, 2 eps, ..., T]
+res.density_matrices      # rho(t), one per physical step, aligned 1:1 with res.times
+res.density_matrices[-1]  # == res.final_density_matrix
+```
+
+It is **off by default**: without the flag a solve keeps `compress_method='zipup'`,
+builds no terminators and returns `res.density_matrices is None`, exactly as before.
+
+Three things to know before using it:
+
+- **It needs `compress_method='dm_tracking'` whenever `compress=True`**, and that method
+  exists *only* for this — requesting either one alone raises `ValueError` at the entry
+  point. `dm_tracking` shares quimb's `dm` rank-selection policy but is a separate in-repo
+  sweep with its own gauge discipline, so it is **not** bit-identical to `dm`.
+  With `compress=False` no bond basis changes and any otherwise-valid method is accepted.
+- **The reads land only on physical steps.** The order-2 grid has two algebraic sub-steps
+  per physical step and only the `order·n` cuts are physical states; the half-step cuts are
+  never created. This is *not* self-diagnosing — a mid-Strang cut still has `|Tr ρ − 1| ~ 1e-16`.
+- **The final-time error does not bound the earlier reads.** Measured: the prefix error is
+  roughly flat in time at the final-time level, while independent per-time runs get more
+  accurate at early times. Converge the truncation, then re-run once with a tighter `cutoff`
+  and/or larger `max_bond` and check that **every** `ρ(t_n)` is stable — not just `ρ(T)`.
+
+Derivation, the numpy/Mathematica cross-validation record and the cost analysis:
+[docs/design/causal-prefix-time-reads.md](docs/design/causal-prefix-time-reads.md).
 
 ## Which backend?
 
@@ -221,7 +266,8 @@ immutable afterwards (use `dataclasses.replace` for a variant).
 | `cutoff_mode` | `abs`, `rel`, `sum2`, `rsum2`, `sum1`, `rsum1` (`rel`) | quimb-native truncation rule (`rel` = `s_i/s_max ≤ ξ`). The paper's custom `rel_ref` rule — and the reference-index parameter it needed — are retired |
 | `max_bond` | int > 0 or `None` (`None`) | hard bond-dimension cap |
 | `record_rho` | bool (`False`) | store `ρ(t)`. Some paths record it anyway (2nd-order spin-boson, custom observables) |
-| `compress_method` | `zipup`, `dm`, `direct` (`zipup`) | quimb 1D-compress algorithm. *Track 1 only* |
+| `record_time_reads` | bool (`False`) | fill `res.density_matrices` with the `ρ(t)` time axis. A *generic* request each pipeline satisfies its own way: single-bath turns on its per-step recorder, Track 2 already has the history, and separable Track 1 reads every step off one fold — which needs `compress_method='dm_tracking'`. See [ρ(t) on a separable bath](#ρt-on-a-separable-bath-gaudin-and-dicke) |
+| `compress_method` | `zipup`, `dm`, `direct`, `dm_tracking` (`zipup`) | quimb 1D-compress algorithm. *Track 1 only*. `dm_tracking` is **not** a quimb method — it is the in-repo terminator-carrying sweep, legal only together with `record_time_reads=True` |
 | `compress_decomp` | `exact`, `rsvd` (`exact`) | per-bond decomposition (`rsvd` = randomized SVD + guard). *Track 1 only* |
 | `compress_decomp_q` | int ≥ 0 (`2`) | rSVD power iterations (`2` = cold, `0` = single-pass). *Track 1 only* |
 | `compress_canon` | `quimb`, `householder`, `cholqr` (`quimb`) | canonicalisation QR. *Track 1 only* |
@@ -243,7 +289,7 @@ immutable afterwards (use `dataclasses.replace` for a variant).
 |---|---|---|
 | `SpinBosonModel` | `1` only | `S_z` (its single coupling channel) |
 | `GaudinModel` | `1`, `2`, `3` | `S_x`, `S_y`, `S_z` |
-| `DickeModel` | `None` only | *no* time-resolved polarization is published by the `separable_td` pipeline; `channel=1` is a legal index but raises `NotImplementedError`, and anything else still raises `ValueError`. Read `res.final_density_matrix` instead |
+| `DickeModel` | `None` only | *no* time-resolved polarization is published by the `separable_td` pipeline; `channel=1` is a legal index but raises `NotImplementedError`, and anything else still raises `ValueError`. Read `res.final_density_matrix`, or `res.density_matrices` with `record_time_reads=True`, instead |
 
 `0`, negative values, out-of-range values, floats, strings and `bool` all raise `ValueError` —
 in particular `channel=0` is rejected rather than silently selecting the last operator by
@@ -287,7 +333,12 @@ only (the `hpc` 2D contraction has no 1D-compress sweep).
 (canonicalise + truncate in one sweep), executed via autoray on whatever backend the
 arrays live on. `compress_method='zipup'` (default) is fast and low-memory;
 `direct` is the exact SVD sweep; `dm` is the density-matrix method (`eigh`-based,
-fastest but lower precision). `compress_decomp='rsvd'` swaps the per-bond full SVD for
+fastest but lower precision). `dm_tracking` is the one exception to "everything goes
+through quimb": an in-repo two-sweep compression that exposes each bond's basis change so
+the causal-prefix terminators can be transported through it. It reuses quimb's
+rank-selection policy but not its sweep, so it is a *different* trajectory from `dm`, and
+it is accepted only with `record_time_reads=True`.
+`compress_decomp='rsvd'` swaps the per-bond full SVD for
 a randomized SVD whose power-iteration count is `compress_decomp_q` (`2` cold, `0`
 single-pass); a **silent resolution guard** falls back to exact full SVD when the
 randomized result is under-resolved or the backend is not NumPy. The guard covers the

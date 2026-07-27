@@ -71,6 +71,17 @@ threshold, not an error bound on observables.
 - `record_rho` — store `rho(t)` at every step (strictly a `bool`). Some
   paths record reduced states regardless: second-order spin-boson and
   custom observables need them anyway.
+- `record_time_reads` — fill `res.density_matrices` with the `rho(t)`
+  time axis (strictly a `bool`, default `False`). A **generic** request
+  that each pipeline satisfies its own way: single-bath Track 1 turns on
+  its per-step recorder, Track 2 already produces the history, and the
+  separable engines (Gaudin and Dicke) read every physical step off
+  **one** fold with the causal-prefix terminators. On the separable
+  engines that needs `compress_method='dm_tracking'` whenever
+  compression runs; `compress=False` is exempt. Off by default, so a
+  default solve keeps `zipup`, builds no terminators and leaves
+  `density_matrices` as `None`. See
+  {doc}`../design/causal-prefix-time-reads`.
 - `precision` — `'f64'` (default) or `'mixed'`. As implemented, `'mixed'`
   casts the tensor contraction to f32; the f64 decomposition stage that
   the backend's `PrecisionPolicy` declares is **not wired into the solve
