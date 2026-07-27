@@ -82,16 +82,65 @@ def test_cupy_stats_keys_and_types():
 
 
 @pytest.mark.gpu
-def test_cupy_scope_frees_blocks():
+def test_cupy_scope_releases_its_own_allocation():
+    """``used_bytes`` returns to the pre-scope baseline -- the actual leak criterion.
+
+    This used to assert ``pool.n_free_blocks() == 0``, which is **not** a leak test: the
+    default pool is a process-wide shared object, and CuPy documents that a block split out
+    of it may stay un-returnable until its fragments recombine, even after
+    ``free_all_blocks()``.  So the assertion measured what earlier tests had left behind.
+    Measured on an A800: this test passed **alone** and passed within its own file, and only
+    failed once other GPU tests had run first (7 free blocks inherited) -- order dependence,
+    not a leak in :meth:`MemoryManager.scope`.
+
+    ``used_bytes`` is per-allocation and unaffected by that caching, so it says what the
+    scope actually did.
+    """
     import cupy as cp
 
     m = MemoryManager("cupy")
     pool = cp.get_default_memory_pool()
+    cp.cuda.Device().synchronize()
+    baseline = pool.used_bytes()
     with m.scope():
         a = cp.ones((256, 256), dtype=cp.complex128)
+        assert pool.used_bytes() > baseline          # the allocation really happened
         del a
-    # after the scope, cached blocks have been returned to the driver
-    assert pool.n_free_blocks() == 0
+    cp.cuda.Device().synchronize()
+    assert pool.used_bytes() == baseline             # and it was released
+
+
+@pytest.mark.gpu
+def test_cupy_scope_frees_both_pools_on_exit():
+    """The contract itself: leaving the scope calls ``free_all_blocks`` on device AND pinned.
+
+    Asserted by spying the two calls rather than by inspecting global pool counters, which
+    other tests share.  ``MemoryPool.free_all_blocks`` is a read-only attribute, so the spy
+    goes on the objects EDMTN looks them up from.
+    """
+    import cupy as cp
+
+    m = MemoryManager("cupy")
+    calls = []
+
+    class _Spy:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def free_all_blocks(self):
+            calls.append(self.tag)
+
+    original_pool = MemoryManager._pool
+    original_pinned = cp.get_default_pinned_memory_pool
+    MemoryManager._pool = lambda self: _Spy("device")
+    cp.get_default_pinned_memory_pool = lambda: _Spy("pinned")
+    try:
+        with m.scope():
+            pass
+    finally:
+        MemoryManager._pool = original_pool
+        cp.get_default_pinned_memory_pool = original_pinned
+    assert calls == ["device", "pinned"]
 
 
 @pytest.mark.gpu
