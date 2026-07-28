@@ -494,3 +494,58 @@ def test_model_docstrings_state_ranges_and_capability_boundaries():
     assert "*not* the highest occupied photon number" in dm
     assert "read-only" in DickeBathParams.__doc__
     assert "never sorts or renormalises" in DickeBathParams.__doc__
+
+
+# -- the Dicke `moments` vocabulary and its result fields ------------------------------------
+
+def test_moments_vocabulary_matches_the_documented_one():
+    """The guide's table and the code's closed vocabulary are one contract."""
+    from edmtn.driver.solver import MOMENT_NAMES
+
+    guide = (ROOT / "docs/guide/solving.md").read_text(encoding="utf-8")
+    assert MOMENT_NAMES == ("n", "n_factorial2", "Jx", "Jy", "Jz", "Jabs")
+    for name in MOMENT_NAMES:
+        assert f"`{name}`" in guide, f"{name} is requestable but undocumented"
+    # g2(0) is deliberately NOT a request: the caller forms the ratio from the raw moments
+    assert "g2" not in MOMENT_NAMES
+    assert "`g2(0)` is deliberately **not**" in guide
+
+
+def test_solver_result_publishes_the_moment_fields():
+    from edmtn.driver.solver import SolverResult
+
+    fields = SolverResult.__dataclass_fields__
+    assert "moments" in fields and "moment_truncation_errors" in fields
+    results_doc = (ROOT / "docs/guide/results.md").read_text(encoding="utf-8")
+    assert "| `moments` |" in results_doc
+    assert "| `moment_truncation_errors` |" in results_doc
+    # both default to "nothing was requested", never to an empty container
+    empty = SolverResult(times=[], polarization=None, bond_dims=[], truncation_errors=[],
+                         expansion_order=1)
+    assert empty.moments is None and empty.moment_truncation_errors is None
+
+
+def test_the_exception_table_covers_the_observable_guards():
+    """The two guards this stage added must appear in the public exception table.
+
+    Both are *legal-input* failures -- a computation that ran and produced something that
+    cannot be returned honestly -- so a reader consulting the table would otherwise never
+    learn that a solve can raise for either reason.
+    """
+    page = (ROOT / "docs/guide/convergence.md").read_text(encoding="utf-8")
+    value_row = next(ln for ln in page.splitlines() if ln.startswith("| `ValueError`"))
+    fpe_row = next(ln for ln in page.splitlines()
+                   if ln.startswith("| `FloatingPointError`"))
+    assert "imaginary part" in value_row                 # real-valued extraction guard
+    assert "moment" in fpe_row and "trace" in fpe_row    # non-finite observable guard
+    assert "|<J>|" in fpe_row or "Jabs" in fpe_row       # ... including the derived one
+
+
+def test_only_the_spin_moments_conflict_with_time_reads():
+    from edmtn.models import DickeModel
+
+    model = DickeModel(K=1, n_fock=3, coupling=0.3, omega=1.0)
+    kw = dict(T=0.2, eps=0.1, record_time_reads=True, compress_method="dm_tracking")
+    with pytest.raises(ValueError, match="record_time_reads"):
+        solve(model, **kw, moments=["Jz"])
+    assert set(solve(model, **kw, moments=["n"]).moments) == {"n", "trace"}

@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import math
 import numbers
+from collections.abc import Mapping
+
+import numpy as np
 
 #: allowed ``cutoff_mode`` strings (quimb-native cutoff modes); the driver's
 #: ``SolverConfig`` validation imports this so both entry points share one set.
@@ -280,3 +283,66 @@ def validate_time_read_combination(*, record_time_reads, compress, compress_meth
             "compress_method='dm_tracking' is only for record_time_reads=True; it exists to "
             "transport the causal-prefix terminators and is not a general-purpose "
             "compressor.  Use 'dm' for an ordinary density-matrix compression.")
+
+
+def validate_tangent_closings(name: str, value, K: int):
+    """Normalise the per-channel bath-side closing vectors, or return ``None``.
+
+    ``value`` maps a channel name to a ``(K, lateral)`` array of newest-site lateral
+    closing vectors, one row per sub-bath -- row ``k`` belongs to sub-bath ``k`` in the
+    model's own stored order, so a shorter or longer first axis is a mismatch, never a
+    silent broadcast.  The row length is *not* checked here: the lateral dimension belongs
+    to the kernel, which validates it when the vector is contracted.
+
+    An empty mapping raises rather than normalising to "no channels": it would otherwise be
+    an argument that silently does nothing.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"{name} must be a mapping of channel name -> ({K}, lateral) closing array or "
+            f"None, got {type(value).__name__}")
+    if not value:
+        raise ValueError(
+            f"{name} is empty; pass None to request no tangent channel rather than a "
+            f"mapping that computes nothing")
+    out = {}
+    for key, rows in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{name} keys must be non-empty strings, got {key!r}")
+        try:
+            arr = np.asarray(rows, dtype=np.complex128)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{name}[{key!r}] must be a numeric ({K}, lateral) array") from exc
+        if arr.ndim != 2 or arr.shape[0] != K:
+            raise ValueError(
+                f"{name}[{key!r}] must have shape ({K}, lateral) -- one closing vector per "
+                f"sub-bath -- got shape {arr.shape}")
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"{name}[{key!r}] must be finite")
+        out[key] = arr
+    return out
+
+
+def validate_tangent_time_read_combination(*, tangent_closings, record_time_reads,
+                                           compress) -> None:
+    """Reject compressed tangent channels together with ``record_time_reads``.
+
+    The reason is structural, not a policy: with compression on, ``record_time_reads``
+    forces ``compress_method='dm_tracking'``, and ``QuimbEDM.compress`` requires
+    ``dm_tracking`` and the ``PrefixTerminators`` to appear together in both directions.
+    The tangent chains carry no terminators, so they cannot take that path; letting them
+    compress with ``'dm'`` while the value channel used ``'dm_tracking'`` would run two
+    different numerical paths under one reported ``compression_method_used``.
+
+    With ``compress=False`` nothing compresses, so the combination is allowed.
+    """
+    if tangent_closings is not None and record_time_reads and compress:
+        raise ValueError(
+            "tangent_closings with record_time_reads=True and compress=True is not "
+            "supported: time reads force compress_method='dm_tracking', which exists only "
+            "to transport the causal-prefix terminators, and the tangent chains have none. "
+            "Run the time reads and the collective-spin moments as two solves, or set "
+            "compress=False.")

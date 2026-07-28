@@ -11,14 +11,35 @@ set.  ``final_density_matrix`` is filled on every pipeline.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from ..evolution.mps_utils import _xp
 from ..models.base import validate_channel
 from ..observables.convergence import is_converged, max_history_deviation
-from ..observables.extractor import ObservableExtractor
+from ..observables.extractor import (
+    ObservableExtractor,
+    finite_complex_expectation,
+    real_scalar_expectation,
+)
 from .auto_config import SolverConfig, build_pipeline, resolve_config_for_model
+
+#: The closed vocabulary of :meth:`EDMSolver.solve`'s ``moments`` argument.  Deliberately
+#: small and fixed: an unknown name is a ``ValueError`` on every model, so a typo can never
+#: be read as "compute nothing".  ``g2(0)`` is **not** here -- it is the ratio
+#: ``n_factorial2 / n**2``, whose denominator passes through zero on a run started from the
+#: vacuum, and choosing the interval on which that ratio is meaningful is the caller's
+#: physics decision, not the pipeline's.
+MOMENT_NAMES = ("n", "n_factorial2", "Jx", "Jy", "Jz", "Jabs")
+
+#: Moments that need a bath-side measurement insertion, i.e. an extra folded chain per
+#: channel.  The rest are post-processing of the reduced cavity state and cost nothing.
+_TANGENT_MOMENTS = frozenset({"Jx", "Jy", "Jz", "Jabs"})
+_JPLUS_MOMENTS = frozenset({"Jx", "Jy", "Jabs"})
+_JZ_MOMENTS = frozenset({"Jz", "Jabs"})
 
 
 @dataclass
@@ -113,6 +134,30 @@ class SolverResult:
         ``None`` on Track 2, which has no Layer-5 evolution object.
     error_metrics : dict or None
         Track 2 only: reference error metrics (``‖ρ−ρ†‖`` / ``|Tr ρ−1|`` + optimizer stats).
+    moments : dict or None
+        Final-time basic observables, ``None`` unless ``moments`` was requested (nothing
+        is computed by default).  Contains exactly the requested names, plus the
+        by-products of a channel that had to run anyway (``Jx`` and ``Jy`` come from one
+        chain, so each brings the other; ``Jabs`` brings all three components), plus
+        ``trace`` -- ``Tr rho(T)``, raw and un-normalised, so a truncation or step-size
+        trace deviation stays visible instead of being silently divided out.  Requesting a
+        single component never triggers the other channel and never computes ``Jabs``.
+        Scalars are Python numbers: ``trace`` is ``complex``, everything else ``float``
+        (``Jx``/``Jy`` are the real and imaginary parts of ``<J_+>``, which is complex by
+        construction; ``n``, ``n_factorial2`` and ``Jz`` pass an imaginary-part guard).
+        The collective-spin values are **sums over the sub-baths actually folded**, so with
+        ``sub_baths = L < K`` they describe the first ``L`` spins and are bounded by
+        ``|<J>| <= L/2`` -- a bound that holds for a *normalised* physical state, so
+        judge it together with the raw ``trace`` returned alongside (nothing is
+        normalised on the way out).
+    moment_truncation_errors : dict or None
+        ``{channel: list[float | None]}`` for the collective-spin channels that ran
+        (``'Jplus'``, ``'Jz'``), aligned with ``sub_bath_counts`` and carrying the same
+        per-interval semantics as ``truncation_errors``.  Keyed by **channel**, so ``Jx``
+        and ``Jy`` share one record rather than appearing as two independent copies.
+        ``None`` when no spin moment was requested.  Recorded separately from
+        ``truncation_errors`` on purpose: once the chains are compressed the tangent is a
+        jet *approximation*, and the value channel's record is not evidence about it.
     compression_method_used : str or None
         The outer 1D-compress path actually entered -- ``'zipup'``, ``'direct'``, ``'dm'``
         or ``'dm_tracking'``.  ``None`` when no compression ran, or on Track 2.  It does
@@ -141,6 +186,8 @@ class SolverResult:
     sub_baths_used: int | None = None                # actual number of sub-baths folded (None if N/A)
     final_density_matrix: object = None              # reduced state at the end of the solve (all pipelines)
     compression_method_used: str | None = None       # outer 1D-compress path entered (see docstring)
+    moments: dict | None = None                      # requested final-time moments (see docstring)
+    moment_truncation_errors: dict | None = None     # per spin CHANNEL, ∥ sub_bath_counts
 
     @property
     def max_bond(self) -> int:
@@ -290,8 +337,68 @@ class EDMSolver:
                 f"result.sub_bath_final_density_matrices with record_rho=True")
         return validate_channel(1 if channel is None else channel, n_ch)
 
+    def _resolve_moments(self, moments):
+        """Normalise the requested ``moments``, or return ``None`` for "compute nothing".
+
+        Nothing extra is computed unless the caller asks for it by name, and only what
+        was asked for is computed -- the collective-spin moments each cost a whole extra
+        folded chain, so a default-on or "compute the neighbours too" policy would charge
+        for work nobody requested.
+
+        The rules, all applied here rather than deep in a pipeline:
+
+        * ``None`` means no request; so does an empty sequence, which is a caller
+          building a list programmatically and finding nothing to add;
+        * the argument must be an **ordered** ``Sequence`` -- a list or tuple.  A ``set``
+          or a generator is refused: "duplicates are dropped preserving first appearance"
+          is meaningless for an unordered container, and a generator would be consumed by
+          the first thing that looked at it;
+        * a **bare string** (or ``bytes``) is refused rather than iterated -- both *are*
+          sequences, so ``moments='Jz'`` would otherwise silently become the characters
+          ``'J'`` and ``'z'``;
+        * every item must be a strict ``str`` from :data:`MOMENT_NAMES`; an unknown name
+          is a ``ValueError`` **on every model**, before any capability question;
+        * duplicates are dropped, preserving first appearance.
+
+        Capability is then decided by a **Dicke-specific provider on the model**, not by
+        ``bath_type == 'separable_td'``: the bath type is a pipeline class and does not
+        guarantee a Fock-truncated cavity or Pauli spins, which is what makes both the
+        photon-number moments and ``J = sigma/2`` meaningful.  A model that cannot supply
+        ``collective_spin_closures(t)`` raises ``NotImplementedError``.
+        """
+        if moments is None:
+            return None
+        if isinstance(moments, (str, bytes)):
+            raise ValueError(
+                f"moments must be a sequence of names, not the bare string {moments!r}: a "
+                f"string iterates as single characters.  Pass ({moments!r},) instead")
+        if not isinstance(moments, Sequence):
+            raise ValueError(
+                f"moments must be an ordered sequence (list or tuple) of names from "
+                f"{MOMENT_NAMES}, or None, got {type(moments).__name__}")
+        names: list[str] = []
+        for item in moments:
+            if type(item) is not str:
+                raise ValueError(
+                    f"every entry of moments must be a string from {MOMENT_NAMES}, got "
+                    f"{item!r}")
+            if item not in MOMENT_NAMES:
+                raise ValueError(
+                    f"unknown moment {item!r}; choose from {MOMENT_NAMES}")
+            if item not in names:
+                names.append(item)
+        if not names:
+            return None                     # an empty request is not an error, just nothing
+        if not callable(getattr(self.model, "collective_spin_closures", None)):
+            raise NotImplementedError(
+                f"moments={tuple(names)} needs a model exposing collective_spin_closures(t) "
+                f"-- a Fock-truncated cavity coupled to Pauli spins (DickeModel); "
+                f"{type(self.model).__name__} does not provide one")
+        return tuple(names)
+
     def solve(self, observables: dict | None = None, *,
-              channel: int | None = None) -> SolverResult:
+              channel: int | None = None,
+              moments: Sequence[str] | None = None) -> SolverResult:
         """Evolve and extract observables.
 
         Parameters
@@ -304,15 +411,41 @@ class EDMSolver:
             (the default) selects channel ``1`` on the pipelines that provide a
             polarization history, and means "no polarization requested" on
             ``separable_td``, which provides none -- see :meth:`_resolve_channel`.
+        moments : sequence of str, optional
+            Basic final-time observables to extract, from :data:`MOMENT_NAMES`; ``None``
+            (the default) computes none.  ``'n'`` and ``'n_factorial2'`` are
+            post-processing of the reduced cavity state and essentially free; each
+            collective-spin channel costs an additional folded chain.  Lands in
+            :attr:`SolverResult.moments` -- see :meth:`_resolve_moments` for the naming
+            rules and :attr:`SolverResult.moments` for what comes back.
         """
         # validate once, before any backend/bath dispatch or evolution -- every inner path
         # then receives a normalised Python int (no negative-index channel selection),
         # or None where the pipeline publishes no polarization
+        moments = self._resolve_moments(moments)
         channel = self._resolve_channel(channel)
+        if moments is not None:
+            if self.config.backend == "hpc":
+                raise NotImplementedError(
+                    "moments are not available on backend='hpc': the 2D contraction is "
+                    "Gaudin/`separable`-only and builds no sub-bath fold to insert a "
+                    "bath-side measurement into")
+            if self.config.record_time_reads and _TANGENT_MOMENTS.intersection(moments):
+                raise ValueError(
+                    f"moments={moments} with record_time_reads=True is not supported: the "
+                    f"collective-spin moments fold an extra chain per channel, while time "
+                    f"reads force compress_method='dm_tracking' to transport the "
+                    f"causal-prefix terminators -- which those chains do not carry.  "
+                    f"Request them in two separate solves; 'n' and 'n_factorial2' do "
+                    f"coexist with record_time_reads")
         if self.config.backend == "hpc":
             return self._solve_hpc(observables, channel=channel)
         if self.model.bath_type == "separable_td":
-            return self._solve_separable_td(observables)
+            return self._solve_separable_td(observables, moments=moments)
+        if moments is not None:
+            raise NotImplementedError(
+                f"moments={moments} are implemented on the separable_td (Dicke) pipeline "
+                f"only, but this model's bath_type is {self.model.bath_type!r}")
         if self.model.bath_type == "separable":
             return self._solve_separable(observables, channel=channel)
 
@@ -488,7 +621,7 @@ class EDMSolver:
 
     # -- time-dependent separable bath (Dicke) ----------------------------
 
-    def _solve_separable_td(self, observables: dict | None) -> SolverResult:
+    def _solve_separable_td(self, observables: dict | None, *, moments=None) -> SolverResult:
         """Solve a time-dependent separable-bath model (Dicke): same Eq.-21 outer loop as
         :meth:`_solve_separable`, but **without** a coupling-channel polarization history.
 
@@ -506,6 +639,11 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
         ``sub_bath_final_density_matrices``.
         Everything else is the standard separable contract, plus
         ``final_density_matrix`` -- so a default solve still returns a physical state.
+
+        ``moments`` (already resolved by :meth:`_resolve_moments`) selects the basic
+        observables of ``docs/design/dicke-observable-extraction.md``.  The cavity moments
+        are read off the final reduced state; each requested collective-spin channel adds
+        one tangent chain to the fold, closed on the bath side at the final grid time.
         """
         if observables:
             raise NotImplementedError(
@@ -515,6 +653,32 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
                 "result.final_density_matrix")
         cfg = self.config
         convert, memory, backend_label = self._resolve_backend()
+        tangent_closings = None
+        if moments is not None and _TANGENT_MOMENTS.intersection(moments):
+            # the grid's own final time, n_steps*eps, not cfg.T -- the same value the
+            # evolution samples, so the picture phases cannot sit a round-off apart
+            closures = self.model.collective_spin_closures(cfg.n_steps * cfg.eps)
+            wanted = []
+            if _JPLUS_MOMENTS.intersection(moments):
+                wanted.append("Jplus")
+            if _JZ_MOMENTS.intersection(moments):
+                wanted.append("Jz")
+            # the provider is duck-typed, so what it returns is checked here rather than
+            # left to leak a bare KeyError from the indexing below; the shapes and
+            # finiteness of the vectors stay with validate_tangent_closings, which the
+            # evolution applies to every entry
+            if not isinstance(closures, Mapping):
+                raise ValueError(
+                    f"{type(self.model).__name__}.collective_spin_closures(t) must return a "
+                    f"mapping of channel name -> closing array, got "
+                    f"{type(closures).__name__}")
+            missing = [ch for ch in wanted if ch not in closures]
+            if missing:
+                raise ValueError(
+                    f"{type(self.model).__name__}.collective_spin_closures(t) is missing the "
+                    f"channel(s) {missing} needed by moments={moments}; it returned "
+                    f"{sorted(closures)}")
+            tangent_closings = {ch: closures[ch] for ch in wanted}
         ev = self.evolution.run(
             self.model,
             self.kernel_engine,
@@ -528,7 +692,11 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
             sub_baths=cfg.sub_baths,
             convert=convert,
             memory=memory,
+            tangent_closings=tangent_closings,
         )
+        final_rho = _final_reduced_state(ev.mps, ev.density_matrices)
+        moment_values = (None if moments is None
+                         else _extract_moments(moments, final_rho, ev.tangent_density_matrices))
         return SolverResult(
             times=cfg.eps * np.arange(1, cfg.n_steps + 1, dtype=np.float64),
             polarization=None,                                     # no channel history here
@@ -547,8 +715,10 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
             sub_bath_final_density_matrices=ev.density_matrices,   # rho_L(T) if record_rho, else None
             final_time_bond_dims=ev.mps.bond_dims,
             sub_baths_used=ev.n_sub_baths,
-            final_density_matrix=_final_reduced_state(ev.mps, ev.density_matrices),
+            final_density_matrix=final_rho,
             compression_method_used=ev.compression_method_used,
+            moments=moment_values,
+            moment_truncation_errors=ev.tangent_truncation_errors,
         )
 
     # -- convergence helpers ----------------------------------------------
@@ -606,6 +776,61 @@ The Eq.-F2/F3 sweep selects a coupling-operator arm at one time site and closes
         return TimestepConvergence(dev, ok, metadata)
 
 
+def _extract_moments(names, rho, tangents) -> dict:
+    """Pack the requested final-time moments (plus by-products and ``trace``).
+
+    ``rho`` is the reduced **cavity** state at ``T`` and ``tangents`` the per-channel
+    ``d x d`` matrices ``tilde_rho^(alpha) = Tr_B[(1 (x) sigma_alpha) rho_CB(T)]`` (or
+    ``None`` when no spin moment was requested).
+
+    Every reduction runs on the array's own backend and exactly one scalar per quantity
+    crosses back with ``.item()``, so a GPU run neither transfers the state to the host nor
+    trips CuPy's ban on implicit conversion.
+
+    The cavity moments use the **diagonal only**, which is exact here rather than merely
+    convenient: ``a^dag a`` and the normal-ordered ``a^dag a^dag a a = n(n-1)`` are both
+    diagonal in the Fock basis and boundary-safe under the truncation (the two
+    annihilations act first and never reach the top level).  That is a property of these
+    two moments, not a general licence -- in a space of dimension ``d`` the commutator is
+    ``[a, a^dag] = 1 - d P_top``, so any *rearranged* expression must be built as an
+    explicit matrix in the truncated space instead.  Both are also picture independent,
+    commuting with ``H_0``, so no rotation is applied to them.
+    """
+    xp = _xp(rho)
+    diag = rho.diagonal()                        # backend-native, complex
+    d = int(diag.shape[0])
+    out: dict = {}
+    if "n" in names or "n_factorial2" in names:
+        levels = xp.arange(d)
+        if "n" in names:
+            out["n"] = real_scalar_expectation("n", (levels * diag).sum().item())
+        if "n_factorial2" in names:
+            out["n_factorial2"] = real_scalar_expectation(
+                "n_factorial2", (levels * (levels - 1) * diag).sum().item())
+    if _JPLUS_MOMENTS.intersection(names):
+        # <J_+> is complex by construction: its real and imaginary parts are two different
+        # observables, so it takes no imaginary-part guard -- but both parts must still be
+        # finite.  Both come from one chain, so each is the other's by-product, and both
+        # are kept.
+        j_plus = finite_complex_expectation("Jplus", tangents["Jplus"].trace().item())
+        out["Jx"] = float(j_plus.real)
+        out["Jy"] = float(j_plus.imag)
+    if _JZ_MOMENTS.intersection(names):
+        out["Jz"] = real_scalar_expectation("Jz", tangents["Jz"].trace().item())
+    if "Jabs" in names:
+        # hypot, not sqrt of a sum of squares: three individually finite components can
+        # still overflow when squared and added, which would return `inf` from a check
+        # that already passed on every input.  The result is re-checked, because the
+        # finiteness contract covers what is RETURNED, not only what was read.
+        out["Jabs"] = real_scalar_expectation(
+            "Jabs", math.hypot(out["Jx"], out["Jy"], out["Jz"]))
+    # raw and un-normalised: a trace deviation is evidence about the run and must reach
+    # the caller rather than being divided out of the moments above.  Un-normalised is not
+    # the same as unchecked -- a non-finite trace is a broken run, not evidence.
+    out["trace"] = finite_complex_expectation("trace", diag.sum().item())
+    return out
+
+
 def _final_reduced_state(mps, recorded):
     """The final reduced density matrix, reusing a recorded one when the pipeline has it.
 
@@ -621,11 +846,17 @@ def _final_reduced_state(mps, recorded):
 
 def solve(
     model, *, T: float, eps: float, observables: dict | None = None,
-    channel: int | None = None, **kwargs
+    channel: int | None = None, moments: Sequence[str] | None = None, **kwargs
 ) -> SolverResult:
     """Convenience one-shot solve.
 
     ``channel=None`` (the default) selects coupling channel ``1`` on the pipelines that
     publish a polarization history, and means "none requested" on ``separable_td``.
+
+    ``moments`` is declared **explicitly** rather than left to ``**kwargs``: everything
+    unnamed here is forwarded to :class:`~edmtn.driver.auto_config.SolverConfig`, where an
+    unknown field is a ``TypeError`` -- so a solve-time argument that only the solver
+    understands has to be named, or it would never reach :meth:`EDMSolver.solve`.
     """
-    return EDMSolver.from_model(model, T=T, eps=eps, **kwargs).solve(observables, channel=channel)
+    return EDMSolver.from_model(model, T=T, eps=eps, **kwargs).solve(
+        observables, channel=channel, moments=moments)

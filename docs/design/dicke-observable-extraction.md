@@ -254,7 +254,9 @@ the two are different quantities, not two names for one.
 
 * **`sub_baths = L`.** The jet sums only over the sub-baths actually folded, so the
   returned moments describe the first `L` spins and the bound is
-  `|<J>| <= L/2`, with `L = sub_baths_used`.
+  `|<J>| <= L/2`, with `L = sub_baths_used`.  That bound holds for a *normalised*
+  physical state; the pipeline returns the raw moments and the raw trace, so a run whose
+  trace has drifted must be judged against its own trace rather than against 1.
 * **`|<J>|` is picture invariant only for homogeneous `omega_k`** — a common rotation about
   `z` preserves the modulus; per-spin rotations do not.
 * **`<n> + <J_z>` is not conserved.** Excitation-number conservation is a property of the
@@ -330,9 +332,15 @@ for k in range(n_fold):
     M     = compress(M_old.fold_raw(mpo_0))     # byte-identical to a run without moments
     for ch:
         src    = M_old.fold_raw(mpo_v[ch])      # source term uses M_old, not M
-        dM[ch] = src if dM[ch] is None else compress(dM[ch].fold_raw(mpo_0).add_exact(src))
+        grown  = src if dM[ch] is None else dM[ch].fold_raw(mpo_0).add_exact(src)
+        dM[ch] = compress(grown)                # EVERY fold, the first one included
     release M_old, src, superseded tangent/raw networks and MPO temporaries, then free pool
 ```
+
+`dM_0 = 0` saves the zero chain's own fold and addition — and nothing else. The
+compression the caller configured still applies to `dM_1`: skipping it would make
+`cutoff` and `max_bond` silently inert on this channel (at `n_fold = 1`, permanently)
+while the truncation record claimed a discarded weight of `0.0`.
 
 `QuimbEDM.add_exact(other)` is a dedicated **lossless** addition, not quimb's `+`: two
 `fold_raw` results carry no guarantee of matching internal bond names after
@@ -389,8 +397,11 @@ different numerical paths and would falsify `compression_method_used`.
   `Jx = jp.real` and `Jy = jp.imag` with **no** imaginary-part guard. `n`,
   `n_factorial2` and `Jz` are physically real: an absolute-plus-relative imaginary check is
   reduced **on the array's own backend**, `.item()` is taken last, an excess raises
-  `ValueError`, and a Python `float` is returned. `Jabs` is formed from three floats and
-  needs no further check.
+  `ValueError`, and a Python `float` is returned. `Jabs` is formed from the three
+  components with a numerically stable `hypot` — three individually finite components
+  can still overflow when squared and summed — and the derived value is then checked for
+  finiteness in its own right, because the contract covers what is *returned*, not only
+  what was read.
 
 ### 6.6 Cost
 
@@ -419,7 +430,9 @@ this round.
 5. Vocabulary contract: unknown name, bare string, empty sequence, de-duplication,
    `Jx` returning only `Jx`/`Jy`, `Jabs` returning four keys, and `moments is None` by
    default.
-6. Bounds and invariances: `|<J>| <= L/2`; `|<J>|` picture invariant for homogeneous
+6. Bounds and invariances: `|<J>| <= L/2` **for a normalised physical state**, judged
+   against the run's own raw `trace` since nothing is normalised on the way out;
+   `|<J>|` picture invariant for homogeneous
    `omega_k` and not for inhomogeneous.
 
 **Compressed paths** (the public solver always compresses, so `compress=False` alone is

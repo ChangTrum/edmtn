@@ -22,6 +22,7 @@ below — absence is explicit, never silently zero-filled.
 | field | contract |
 |---|---|
 | `final_density_matrix` | the reduced density matrix at the end of the solve, on **every** pipeline and regardless of `record_rho` — so a successful solve always returns a physical state, never only bond dimensions. Reuses a state the pipeline already computed, so it costs no extra contraction, and keeps the **backend-native** array type (a CuPy array after a GPU run). On the separable pipelines it is `rho_L(T)` for `L = sub_baths_used`: with `sub_baths < K` it is *not* the full-`K` result |
+| `moments` | the requested final-time basic observables (Dicke only), or `None` when none were requested — nothing is computed by default. Holds exactly the requested names, the by-products of a channel that had to run anyway, and `trace` (raw `Tr rho(T)`, never normalised away). Python scalars: `trace` is `complex`, the rest `float`. The collective-spin entries sum over the sub-baths actually folded; for a normalised physical state that bounds them by `\|<J>\| <= L/2` with `L = sub_baths_used` — read the accompanying raw `trace` when judging that bound, since nothing is normalised on the way out. See {doc}`solving` |
 | `compression_method_used` | the outer 1D-compress path entered (`zipup` / `direct` / `dm` / `dm_tracking`), or `None` when no compression ran or on Track 2. Not the per-bond decomposition: `rsvd` falls back to the exact SVD per bond |
 
 ## Fold-axis fields (separable Track 1: Gaudin and Dicke)
@@ -32,6 +33,7 @@ below — absence is explicit, never silently zero-filled.
 | `sub_bath_bond_dims` | `D_L` after folding in `L` sub-baths, aligned with `sub_bath_counts` |
 | `sub_bath_final_density_matrices` | `rho_L(T)` per recorded `L` — a *final-time* state per fold count, **not** a time history; present only with `record_rho=True` |
 | `sub_baths_used` | how many sub-baths were actually folded (the resolved `sub_baths`; `K` when `sub_baths=None`); `None` for non-separable models |
+| `moment_truncation_errors` | `{channel: [...]}` for the collective-spin channels that ran (`Jplus`, `Jz`), aligned with `sub_bath_counts` and carrying the same per-interval semantics as `truncation_errors` below. Keyed by **channel**, so `Jx` and `Jy` share one record. `None` when no spin moment was requested. Kept separate from `truncation_errors` on purpose: once the chains are compressed the extra chain is a jet *approximation*, and the value channel's record is not evidence about its accuracy |
 
 ## The truncation metric
 

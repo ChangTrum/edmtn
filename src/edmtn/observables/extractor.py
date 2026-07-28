@@ -23,6 +23,8 @@ The selector convention matches Layers 3/4b: arm index ``1`` is the ``S^+``
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from ..evolution.mps_utils import _xp
@@ -55,6 +57,49 @@ def _check_imaginary_part(values) -> None:
             f"max|Im| = {imag_max:.3e} > threshold {threshold:.3e} "
             f"(max|Re| = {real_max:.3e}, rel_tol = {_IMAG_REL_TOL:.1e}, "
             f"abs_tol = {_IMAG_ABS_TOL:.1e})")
+
+
+def finite_complex_expectation(name: str, value) -> complex:
+    """Return ``value`` as a Python ``complex``, refusing a non-finite result.
+
+    A ``nan`` or ``inf`` reaching an observable means the computation broke down on legal
+    parameters -- an overflowing contraction, a degenerate decomposition -- so it raises
+    ``FloatingPointError``, the project's signal for exactly that, rather than being
+    returned as a plausible-looking number.  This check must come **first**: a comparison
+    against ``nan`` is always ``False``, so any tolerance test placed before it silently
+    passes.
+    """
+    v = complex(value)
+    if not (math.isfinite(v.real) and math.isfinite(v.imag)):
+        raise FloatingPointError(
+            f"{name} is not finite ({v!r}); the computation produced a non-finite value "
+            f"from legal parameters")
+    return v
+
+
+def real_scalar_expectation(name: str, value) -> float:
+    """Return ``Re value`` as a Python ``float``, refusing a gross imaginary leak.
+
+    The scalar counterpart of :func:`_check_imaginary_part`, for an expectation that is
+    physically real (a photon-number moment, ``<J_z>``): the same absolute-or-relative
+    rule, so the project has one tolerance pair rather than two that can drift.  ``value``
+    must already be a Python scalar -- reduce on the array's own backend and call
+    ``.item()`` *last*, so a CuPy result crosses the device boundary once, as one number.
+
+    Not for a quantity that is complex by construction -- ``<J_+>`` has a real and an
+    imaginary part that are two different observables, and guarding it would reject valid
+    physics.  Use :func:`finite_complex_expectation` for those; it is applied here first,
+    so a ``nan`` raises instead of sliding through the comparison below.
+    """
+    v = finite_complex_expectation(name, value)
+    threshold = max(_IMAG_ABS_TOL, _IMAG_REL_TOL * abs(v.real))
+    if abs(v.imag) > threshold:
+        raise ValueError(
+            f"{name} is physically real but has a non-negligible imaginary part: "
+            f"|Im| = {abs(v.imag):.3e} > threshold {threshold:.3e} "
+            f"(|Re| = {abs(v.real):.3e}, rel_tol = {_IMAG_REL_TOL:.1e}, "
+            f"abs_tol = {_IMAG_ABS_TOL:.1e})")
+    return float(v.real)
 
 
 def _vec_identity(d, like):

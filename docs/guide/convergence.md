@@ -61,9 +61,9 @@ degrades and no longer measures the scheme's order.
 
 | exception | meaning |
 |---|---|
-| `ValueError` | malformed input — a bad config value, an invalid `channel`, a malformed model, an unsupported parameter combination, or an illegal argument to a direct `run()` |
-| `NotImplementedError` | *legal* input, capability not implemented — non-zero temperature on the Gaussian engine, `time_windows`, spin-boson on Track 2, custom observables on separable/Track 2, a `channel` or `timestep_convergence()` on `separable_td` |
-| `FloatingPointError` | the computation produced a non-finite number from legal parameters — a bath correlation overflowing float64, or a non-finite/negative truncation metric |
+| `ValueError` | malformed input — a bad config value, an invalid `channel`, a malformed model, an unsupported parameter combination, or an illegal argument to a direct `run()` — **and** an extracted quantity that is physically real coming back with a non-negligible imaginary part (the coupling polarization, and the `n` / `n_factorial2` / `Jz` moments): a legal computation whose result is not trustworthy, refused rather than returned |
+| `NotImplementedError` | *legal* input, capability not implemented — non-zero temperature on the Gaussian engine, `time_windows`, spin-boson on Track 2, custom observables on separable/Track 2, a `channel` or `timestep_convergence()` on `separable_td`, `moments` on a model that supplies no Dicke closings |
+| `FloatingPointError` | the computation produced a non-finite number from legal parameters — a bath correlation overflowing float64, a non-finite/negative truncation metric, or a non-finite final observable: any returned moment, the raw `trace`, `<J_+>`, or the derived `|<J>|` (checked again after it is formed, since finite components can still combine to overflow) |
 | `CuTensorNetContractionError` (a `RuntimeError`) | EDMTN-detected Track-2 setup or dispatch failures — e.g. a missing distributed MPI wrapper, or an unsupported multi-rank pathfinder. CuPy, cuQuantum and MPI calls may also raise their native runtime exceptions |
 
 Model, config and direct-`run()` arguments are validated at their entry

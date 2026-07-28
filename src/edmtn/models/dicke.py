@@ -94,6 +94,10 @@ CAVITY_STATES = ("vacuum", "coherent", "thermal")
 #: bath initial states selectable by name (an explicit ``(K, 3)`` Bloch array is also accepted)
 BATH_STATES = ("inf", "thermal", "ground")
 
+#: lateral closing channels returned by :meth:`DickeModel.collective_spin_closures`.
+#: One channel is one modified fold; ``"Jplus"`` carries both transverse components.
+COLLECTIVE_SPIN_CHANNELS = ("Jplus", "Jz")
+
 #: tolerance on ``||r_k|| <= 1`` for an explicit Bloch vector (a Bloch vector of length
 #: slightly above 1 through round-off is accepted; a genuinely unphysical one is not)
 _BLOCH_TOL = 1e-12
@@ -561,6 +565,53 @@ class DickeModel(AbstractOQSModel):
         t = _finite_float("t", t)
         wt = self.omegas[k] * t
         return self.couplings[k] * (math.cos(wt) * _SIGMA_X - math.sin(wt) * _SIGMA_Y)
+
+    def collective_spin_closures(self, t: float) -> dict[str, np.ndarray]:
+        """Newest-site lateral closing vectors for the collective spin at time ``t``.
+
+        The lateral index of a sub-bath's transfer tensor carries the **Pauli-coefficient
+        vector** ``x_a = Tr[sigma_a X]`` of the operator ``X`` the chain has accumulated,
+        in the basis ``sigma = (I, sigma_x, sigma_y, sigma_z)``.  Contracting the newest
+        site's left lateral index with a vector ``v`` therefore returns
+        ``sum_a v_a Tr[sigma_a X] = Tr[(sum_a v_a sigma_a) X]``: the default closing
+        ``e_0`` is ``Tr X`` (not measuring), and the vectors returned here insert one
+        Schroedinger-picture spin operator instead.  There is **no** normalisation factor;
+        the coefficient convention is already dual to the Pauli basis.
+
+        Returns ``{"Jplus": (K, 4), "Jz": (K, 4)}``, freshly built complex arrays indexed
+        by the model's own spin order ``k``::
+
+            v^(+)_k = (1/2) e^{i omega_k t} (0, 1, i, 0)   ->  e^{i omega_k t} sigma_k^+
+            v^(z)_k = (1/2) (0, 0, 0, 1)                   ->  (1/2) sigma_{k,z}
+
+        so that the collective sums over the folded sub-baths are ``<J_+>_S`` and
+        ``<J_z>_S``, with ``<J_x>_S = Re <J_+>_S`` and ``<J_y>_S = Im <J_+>_S``.
+
+        This method is the **only** place where the Dicke spin conventions live.  Three of
+        them, each easy to get wrong elsewhere:
+
+        * **the two factors of one half have different origins** -- this model writes its
+          bath operators in Pauli units, so ``J_z = (1/2) sum_k sigma_{k,z}`` supplies one
+          of them, while the other comes from ``sigma^+ = (sigma_x + i sigma_y)/2`` in
+          ``J_+ = sum_k sigma_k^+`` (which carries no prefactor of its own);
+        * **the phase converts the picture**, ``sigma_k^{+,I}(t) = e^{i omega_k t}
+          sigma_k^+``, at a **per-spin** rate -- an inhomogeneous ``omega_k`` cannot be
+          undone by one global rotation afterwards.  ``sigma_z`` commutes with its own
+          generator, so ``Jz`` needs no phase;
+        * **the contraction is bilinear and must not conjugate** ``v``: conjugating turns
+          ``J_+`` into ``J_-``.
+
+        Both transverse components come from the single complex ``Jplus`` channel, which
+        is what makes one modified fold enough for them.
+        """
+        t = _finite_float("t", t)
+        phase = np.exp(1j * self.omegas * t)
+        jplus = np.zeros((self.K, 4), dtype=np.complex128)
+        jplus[:, 1] = 0.5 * phase                   # sigma_x coefficient of sigma^+
+        jplus[:, 2] = 0.5j * phase                  # sigma_y coefficient of sigma^+
+        jz = np.zeros((self.K, 4), dtype=np.complex128)
+        jz[:, 3] = 0.5                              # J_z = sigma_z / 2, no picture phase
+        return {"Jplus": jplus, "Jz": jz}
 
     def memory_time(self) -> float | None:
         # no memory-time cutoff is imposed; with non-zero rates the bath correlation

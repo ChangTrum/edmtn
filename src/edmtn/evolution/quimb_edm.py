@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from ._validation import validate_compression_combination
-from .mps_utils import EDMMPS
+from .mps_utils import EDMMPS, _xp
 
 
 def _max_scalar(value) -> float:
@@ -379,3 +381,104 @@ class QuimbEDM:
         return self.fold_raw(mpo_sites).compress(
             cutoff=cutoff, cutoff_mode=cutoff_mode, method=method, max_bond=max_bond,
             decomp=decomp, decomp_q=decomp_q, canon=canon)
+
+    # -- exact addition (the tangent channel's source term) ----------------
+
+    def add_exact(self, other: "QuimbEDM") -> "QuimbEDM":
+        """Return the **lossless** sum ``self + other`` as a new EDM.
+
+        The two chains are combined by taking the direct sum of the **internal virtual
+        bonds only**: the open arms ``k{p}``, the output leg ``OUT`` and the ``RHO0`` leg
+        are *shared external* legs of both summands, so direct-summing them would build a
+        different object entirely rather than a sum.  Every contraction of the result with
+        a closing therefore equals the sum of the two contractions, exactly -- there is no
+        canonicalisation, no SVD and no truncation here, and the bond of the result is the
+        sum of the two input bonds.  The caller compresses afterwards if it wants to.
+
+        This is deliberately *not* quimb's ``+``.  Two networks produced by independent
+        :meth:`fold_raw` calls carry no guarantee of matching internal bond *names* after
+        ``fuse_multibonds``, and a name-based addition would either fail or silently
+        contract the wrong pair of legs.  The index conventions are re-derived here from
+        the site order, exactly as :meth:`to_edmmps` does.
+
+        Both inputs are left unmutated and the result shares no buffer with either.
+        Arrays are allocated on the inputs' own backend, so a CuPy chain stays on the
+        device; mixing backends is rejected rather than silently transferred.
+
+        Raises
+        ------
+        ValueError
+            if the two EDMs are not structurally addable -- differing ``n``, ``d``,
+            ``d_phys``, per-site open-arm dimensions, ``OUT``/``RHO0`` dimensions, array
+            backends, or a different ``rho0_vec`` (the sum of two chains closing onto
+            different initial states is not the sum of what they represent).
+        """
+        if not isinstance(other, QuimbEDM):
+            raise TypeError(
+                f"add_exact expects a QuimbEDM, got {type(other).__name__}")
+        if (self.n, self.d, self.d_phys) != (other.n, other.d, other.d_phys):
+            raise ValueError(
+                f"add_exact needs structurally identical EDMs: (n, d, d_phys) = "
+                f"{(self.n, self.d, self.d_phys)} vs {(other.n, other.d, other.d_phys)}")
+        if self.n == 0:
+            raise ValueError(
+                "add_exact needs at least one site; an empty EDM carries no tensors and is "
+                "not a summand")
+
+        left = self.to_edmmps().tensors
+        right = other.to_edmmps().tensors
+        if _xp(left[0]) is not _xp(right[0]):
+            raise ValueError(
+                "add_exact needs both EDMs on the same array backend; adding a CuPy chain "
+                "to a NumPy one would move data across the device boundary implicitly")
+        for p in range(self.n):
+            if left[p].shape[0] != right[p].shape[0]:
+                raise ValueError(
+                    f"add_exact: site {p} has open-arm dimension {left[p].shape[0]} on one "
+                    f"side and {right[p].shape[0]} on the other")
+        if left[0].shape[1] != right[0].shape[1]:
+            raise ValueError(
+                f"add_exact: the OUT legs differ, {left[0].shape[1]} vs {right[0].shape[1]}")
+        if left[-1].shape[2] != right[-1].shape[2]:
+            raise ValueError(
+                f"add_exact: the RHO0 legs differ, {left[-1].shape[2]} vs "
+                f"{right[-1].shape[2]}")
+        r_self, r_other = self.rho0_vec, other.rho0_vec
+        if getattr(r_self, "shape", None) != getattr(r_other, "shape", None):
+            raise ValueError(
+                f"add_exact: rho0_vec shapes differ, {getattr(r_self, 'shape', None)} vs "
+                f"{getattr(r_other, 'shape', None)}")
+        # reduce on the arrays' own backend and bring ONE scalar across with .item(), so a
+        # CuPy comparison does not rely on an implicit synchronising bool() conversion
+        if _xp(r_self) is not _xp(r_other) or not bool((r_self == r_other).all().item()):
+            raise ValueError(
+                "add_exact: the two EDMs close onto different rho0_vec values, so their "
+                "sum would not represent the sum of the two evolutions")
+
+        xp = _xp(left[0])
+        n = self.n
+        summed = []
+        for p in range(n):
+            a, b = left[p], right[p]
+            shared_left = p == 0                    # OUT
+            shared_right = p == n - 1               # RHO0
+            if shared_left and shared_right:        # single site: both legs external
+                summed.append(a + b)
+                continue
+            n_left = a.shape[1] if shared_left else a.shape[1] + b.shape[1]
+            n_right = a.shape[2] if shared_right else a.shape[2] + b.shape[2]
+            block = xp.zeros((a.shape[0], n_left, n_right),
+                             dtype=np.promote_types(a.dtype, b.dtype))
+            la = slice(None) if shared_left else slice(0, a.shape[1])
+            lb = slice(None) if shared_left else slice(a.shape[1], n_left)
+            ra = slice(None) if shared_right else slice(0, a.shape[2])
+            rb = slice(None) if shared_right else slice(a.shape[2], n_right)
+            block[:, la, ra] = a
+            block[:, lb, rb] = b
+            summed.append(block)
+        return QuimbEDM.from_edmmps(
+            # copied, not shared: the result must own every buffer it carries, or a caller
+            # writing into it would reach back into an input (a backend-native copy, so a
+            # CuPy vector stays on the device)
+            EDMMPS(tensors=summed, d=self.d, d_phys=self.d_phys,
+                   rho0_vec=self.rho0_vec.copy(), meta=dict(self.meta)))

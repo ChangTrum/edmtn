@@ -98,6 +98,58 @@ threshold, not an error bound on observables.
   is wired but not implemented, and any non-`None` value raises
   `NotImplementedError` at construction.
 
+## Basic observables (`moments`, Dicke only)
+
+`solve(..., moments=[...])` extracts a small closed set of final-time
+observables from the Dicke pipeline. It is a **solve-time** argument, not
+a `SolverConfig` field: `moments` is declared explicitly on both
+`edmtn.driver.solve()` and `EDMSolver.solve()`.
+
+| name | quantity | cost |
+|---|---|---|
+| `n` | `<a†a>` | post-processing of `rho(T)` |
+| `n_factorial2` | `<a†a†aa>` | post-processing of `rho(T)` |
+| `Jx`, `Jy` | `<J_x>`, `<J_y>` | one extra folded chain (`Jplus`), shared |
+| `Jz` | `<J_z>` | one extra folded chain (`Jz`) |
+| `Jabs` | `\|<J>\|` | both chains |
+
+Nothing is computed unless it is named, and only what was named is
+computed — the collective-spin moments each cost a whole extra chain
+through the fold. The one exception is a genuine by-product: `Jx` and
+`Jy` are the real and imaginary parts of one complex read, so each brings
+the other, and `Jabs` brings all three components. Asking for a single
+component never triggers the other channel and never computes `Jabs`.
+
+A non-empty request also returns `trace` — `Tr rho(T)`, raw and
+un-normalised, so a trace deviation stays visible instead of being
+divided out. `g2(0)` is deliberately **not** in the vocabulary: it is
+`n_factorial2 / n²`, and a run started from the vacuum passes through
+`<n> = 0`, so choosing the interval on which that ratio is meaningful is
+a physics decision belonging to the caller.
+
+Contract details:
+
+- an unknown name raises `ValueError` on **every** model; a legal name on
+  a model that cannot supply the Dicke closings then raises
+  `NotImplementedError`;
+- a bare string is refused rather than iterated as characters —
+  `moments='Jz'` is an error, `moments=['Jz']` is the request;
+- an empty sequence is "no request", not an error; duplicates collapse;
+- the collective-spin values sum over the sub-baths **actually folded**,
+  so with `sub_baths = L` they describe the first `L` spins and are
+  bounded by `|<J>| <= L/2` **for a normalised physical state** — the values are
+  returned raw, so check the accompanying `trace` before reading that bound as
+  a violation;
+- a spin moment cannot be combined with `record_time_reads=True` (the
+  time reads need `compress_method='dm_tracking'` to transport the
+  causal-prefix terminators, and the extra chains carry none); `n` and
+  `n_factorial2` coexist with it freely.
+
+The mathematics — why changing the newest-site lateral closing measures a
+bath operator, why one jet fold gives the collective sum, and where the
+exactness stops once the chains are compressed — is in
+{doc}`../design/dicke-observable-extraction`.
+
 ## Checking the time step
 
 `EDMSolver.timestep_convergence()` re-solves at `eps/2` and compares the

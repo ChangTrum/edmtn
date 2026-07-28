@@ -151,6 +151,12 @@ parameters, which is why this model has no named profiles.)
   per-`L` `res.sub_bath_final_density_matrices` with `record_rho=True`.
 - **`timestep_convergence()` raises `NotImplementedError`** for the same
   reason; compare `final_density_matrix` from two solves instead.
+- **Basic final-time observables are available**, through
+  `solve(..., moments=[...])` rather than a channel: `<a†a>`,
+  `<a†a†aa>`, the collective-spin components and `|<J>|`. The capability
+  is the model's `collective_spin_closures(t)`, which supplies the
+  bath-side closing vectors and is the single home of this model's
+  `J = sigma/2` convention. See {doc}`solving`.
 - **Track 2 (`backend='hpc'`) does not support this bath type** — it is
   Gaudin / `bath_type='separable'` only.
 

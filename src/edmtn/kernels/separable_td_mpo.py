@@ -49,8 +49,21 @@ class _SubBathTDKernel(KernelProvider):
         self.d_phys = d_phys
         self.n_sites = int(op_tensor.shape[0])
 
-    def get_kernel_mpo(self, t: int) -> KernelMPO:
-        """Sites for a ``t``-site chain; ``t`` must be the grid this kernel was built for."""
+    def get_kernel_mpo(self, t: int, closing=None) -> KernelMPO:
+        """Sites for a ``t``-site chain; ``t`` must be the grid this kernel was built for.
+
+        ``closing`` selects what the newest site's left lateral index is contracted with.
+        The lateral index carries the Pauli-coefficient vector ``x_a = Tr[sigma_a X]`` of
+        the operator the chain has accumulated, so the default ``None`` -- which keeps the
+        index-``0`` slice -- takes ``Tr X``, i.e. does not measure the bath.  A length-4
+        vector ``v`` instead returns ``Tr[(sum_a v_a sigma_a) X]``, which is what turns
+        this fold into a bath-side measurement insertion.  What ``v`` *means* is decided by
+        the model (see ``DickeModel.collective_spin_closures``); this layer knows only the
+        contraction.
+
+        The contraction is **bilinear and does not conjugate** ``v``: a complex closing is
+        used as given, and conjugating it would silently measure the adjoint operator.
+        """
         if isinstance(t, bool) or not isinstance(t, numbers.Integral):
             raise ValueError(f"t must be an integer, got {t!r}")
         t = int(t)
@@ -59,13 +72,27 @@ class _SubBathTDKernel(KernelProvider):
                 f"this time-dependent kernel was built for {self.n_sites} sites but was "
                 f"asked for {t}; the per-site tensors are grid-specific, so a mismatch "
                 f"would sample the bath at the wrong times")
+        if closing is not None:
+            closing = np.asarray(closing, dtype=np.complex128)
+            lateral = int(self._op.shape[3])
+            if closing.shape != (lateral,):
+                raise ValueError(
+                    f"closing must be a length-{lateral} lateral vector, got shape "
+                    f"{closing.shape}")
+            if not np.all(np.isfinite(closing)):
+                raise ValueError("closing must be finite")
 
         # newest-first: site p carries sub-step g = n_sites - p, i.e. index n_sites-1-p
         sites = [self._op[self.n_sites - 1 - p] for p in range(self.n_sites)]
-        # oldest site: contract the right lateral index with the bath boundary vector r_k
+        # oldest site: contract the right lateral index with the bath boundary vector r_k.
+        # This runs **before** the newest-site closing so that at n_sites == 1, where both
+        # boundaries land on the same tensor, the two contractions still compose.
         sites[-1] = np.tensordot(sites[-1], self._r, axes=([3], [0]))[..., None]
-        # newest site: fix the left lateral index to 0
-        sites[0] = sites[0][:, :, 0:1, :]
+        if closing is None:
+            # newest site: fix the left lateral index to 0
+            sites[0] = sites[0][:, :, 0:1, :]
+        else:
+            sites[0] = np.tensordot(sites[0], closing, axes=([2], [0]))[:, :, None, :]
         return KernelMPO(sites, t=t, d_phys=self.d_phys)
 
     def memory_time(self) -> int | None:
@@ -89,6 +116,12 @@ class SeparableTDKernelEngine:
         Layer-2 description of the grid, the per-sub-bath transfer tensors and the bath
         boundary vectors.
     """
+
+    #: this engine's sub-bath providers accept a lateral ``closing`` vector, so a
+    #: bath-side measurement insertion can be folded.  The evolution checks this flag
+    #: rather than the bath-type string: a kernel without it would otherwise reject the
+    #: argument deep inside the fold loop, as a bare ``TypeError``.
+    supports_closings = True
 
     def __init__(self, correlation: TimeDependentSeparableCorrelation):
         self.corr = correlation
@@ -142,9 +175,12 @@ class SeparableTDKernelEngine:
         op = np.einsum("amd,gmlr->gadlr", self._P, self.corr.transfer_for(k))
         return _SubBathTDKernel(op, self.corr.boundary_vector(k), self.d_phys)
 
-    def get_kernel_mpo(self, t: int, k: int) -> KernelMPO:
-        """Combined-kernel MPO that builds sub-bath ``k``'s contribution over ``t`` sites."""
-        return self.for_sub_bath(k).get_kernel_mpo(t)
+    def get_kernel_mpo(self, t: int, k: int, closing=None) -> KernelMPO:
+        """Combined-kernel MPO that builds sub-bath ``k``'s contribution over ``t`` sites.
+
+        ``closing`` is passed through to :meth:`_SubBathTDKernel.get_kernel_mpo`.
+        """
+        return self.for_sub_bath(k).get_kernel_mpo(t, closing)
 
     def memory_time(self) -> int | None:
         return None
