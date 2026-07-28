@@ -549,3 +549,37 @@ def test_only_the_spin_moments_conflict_with_time_reads():
     with pytest.raises(ValueError, match="record_time_reads"):
         solve(model, **kw, moments=["Jz"])
     assert set(solve(model, **kw, moments=["n"]).moments) == {"n", "trace"}
+
+
+_OVERBROAD_COMPRESSION_CLAIMS = [
+    # `dm` is not unconditionally the fast one: at cutoff=0 with no bond cap it expands the
+    # bond instead of shrinking it
+    (r"fastest but lower precision", "dm is not unconditionally fastest"),
+    # a positive cutoff only makes truncation ELIGIBLE -- the retained rank still depends on
+    # the spectrum, the value and the cutoff_mode; and a max_bond above the rank the sweep
+    # would keep anyway binds nothing
+    (r"any non-zero `?cutoff", "a positive cutoff guarantees no particular rank"),
+    (r"any `?max_bond", "only a max_bond that actually binds caps the rank"),
+    (r"removes the effect entirely", "no knob setting removes it in general"),
+]
+
+
+@pytest.mark.parametrize("pattern,why", _OVERBROAD_COMPRESSION_CLAIMS)
+def test_the_compression_pages_make_no_over_broad_claims(pattern, why):
+    """Both public pages describe `dm` conditionally -- and no knob is promised to fix it.
+
+    The first pattern is the claim that was actually there; the rest guard the *replacement*
+    text, which is where an over-broad universal quantifier is easiest to reintroduce.
+    """
+    compression = (ROOT / "docs/guide/compression.md").read_text(encoding="utf-8")
+    for text, where in ((README, "README.md"), (compression, "docs/guide/compression.md")):
+        assert not re.search(pattern, text), f"{where}: {why}"
+
+
+def test_the_dm_caveat_is_actually_stated():
+    """The guard above only forbids wording; this asserts the caveat is present at all."""
+    compression = (ROOT / "docs/guide/compression.md").read_text(encoding="utf-8")
+    for text, where in ((README, "README.md"), (compression, "docs/guide/compression.md")):
+        assert "max_bond = None" in text or "max_bond=None" in text, f"{where}: no caveat"
+    assert "actually binds" in compression                     # the precise condition
+    assert "cutoff_mode" in compression

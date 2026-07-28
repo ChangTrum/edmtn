@@ -332,8 +332,11 @@ only (the `hpc` 2D contraction has no 1D-compress sweep).
 **Compression.** Everything goes through quimb's `tensor_network_1d_compress`
 (canonicalise + truncate in one sweep), executed via autoray on whatever backend the
 arrays live on. `compress_method='zipup'` (default) is fast and low-memory;
-`direct` is the exact SVD sweep; `dm` is the density-matrix method (`eigh`-based,
-fastest but lower precision). `dm_tracking` is the one exception to "everything goes
+`direct` is the exact SVD sweep; `dm` is the density-matrix method (`eigh`-based, fast but
+lower precision **when it truncates** — at `cutoff=0` with `max_bond=None` quimb truncates
+nothing, so `dm` keeps every eigenvector and the bond expands toward the full environment
+rank instead of shrinking, at a cost cubic in that bond; see the compression guide for the
+measured bond figures and for what does and does not restore a small bond). `dm_tracking` is the one exception to "everything goes
 through quimb": an in-repo two-sweep compression that exposes each bond's basis change so
 the causal-prefix terminators can be transported through it. It reuses quimb's
 rank-selection policy but not its sweep, so it is a *different* trajectory from `dm`, and

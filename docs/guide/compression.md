@@ -32,11 +32,29 @@ discarded weight).
 - `zipup` (default) — fast and low-memory; full SVD under the exact
   decomposition;
 - `direct` — the direct sweep; full SVD under the exact decomposition;
-- `dm` — the density-matrix method (fastest but lower precision). Under
-  the exact decomposition it uses a density-matrix **eigendecomposition**,
-  not an SVD: the split object is `ρ`, whose eigenvalues are `λ = σ²` —
-  which is why the dm path measures the discarded weight as
-  `Σ λ_discarded` (see {doc}`results`);
+- `dm` — the density-matrix method: fast but lower precision **when it is
+  actually truncating**. Under the exact decomposition it uses a
+  density-matrix **eigendecomposition**, not an SVD: the split object is
+  `ρ`, whose eigenvalues are `λ = σ²` — which is why the dm path measures
+  the discarded weight as `Σ λ_discarded` (see {doc}`results`).
+  **With nothing to discard it does the opposite of compressing.** At
+  `cutoff = 0` *and* `max_bond = None` quimb performs no truncation, so
+  this method keeps every eigenvector and the bond expands toward the
+  full environment rank, which grows multiplicatively along the chain. On
+  a 5-site test network (`d_phys = 7`, input bonds all 8) `zipup` and
+  `direct` return the input bonds `[8,8,8,8]` while `dm` expands to
+  `[9604, 1372, 196, 28]`. Those bond figures are deterministic, and the
+  dominant dense eigendecomposition has `O(D³)` arithmetic cost in the
+  largest of them. The combination is numerically legal and lossless; it
+  is simply the wrong tool for a no-truncation sweep. Use
+  `zipup`/`direct` there, or a `max_bond`.
+  What restores a small bond is **not** guaranteed by merely setting the
+  knobs: a positive `cutoff` only makes truncation *eligible*, and how
+  much rank survives still depends on the spectrum, the value and the
+  `cutoff_mode`; only a `max_bond` that actually binds (i.e. is below the
+  rank the sweep would otherwise keep) caps it by construction. On the
+  network above, `cutoff = 1e-12` and a sufficiently small `max_bond`
+  each brought it back to `[8,8,8,8]`;
 - `dm_tracking` — **not a quimb method**. An in-repo two-sweep
   compression (LQ from the oldest end, then the density-matrix isometry)
   that hands each bond's basis change back so the causal-prefix

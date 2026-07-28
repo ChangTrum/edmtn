@@ -90,7 +90,13 @@ def test_each_method_records_a_positive_weight_when_truncating(method):
 
 @pytest.mark.parametrize("method", ["zipup", "direct", "dm"])
 def test_no_truncation_reports_exact_zero(method):
-    q = _edm()
+    # `dm` gets a SHORTER chain, and only `dm`.  With cutoff=0 and no bond cap quimb
+    # truncates nothing, so the density-matrix method keeps every eigenvector and the bond
+    # expands toward the full environment rank -- `d2 * d_phys**(n-1)`, i.e. 9604 at n=5,
+    # measured at ~500 s per call, versus 196 at n=3 in 0.02 s.  The claim under test (a
+    # sweep that CAN discard nothing reports exactly 0.0) is unchanged by the length, and
+    # zipup/direct keep the longer chain so their coverage is not weakened.
+    q = _edm(n=3) if method == "dm" else _edm()
     out = q.compress(cutoff=0.0, cutoff_mode="rel", method=method, max_bond=None, decomp="exact")
     assert out.max_discarded_weight == 0.0
 
