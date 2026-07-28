@@ -49,12 +49,29 @@ def test_unknown_preset_raises():
         SolverConfig(eps=0.1, T=1.0, preset="turbo")
 
 
+#: the fixed part of the preset comparison; every run below shares it, so a difference can
+#: only come from the preset under test
+_PRESET_COMMON = dict(T=3.0, eps=0.2, expansion_order=2, cutoff=1e-8, max_bond=400,
+                      channel=3)
+
+
+@pytest.fixture(scope="module")
+def exact_reference():
+    """The default exact-SVD solve, computed ONCE for every preset.
+
+    It does not depend on the parametrised ``preset``, so building it inside the test body
+    ran the identical ``K=12, T=3.0`` Gaudin solve once per parameter set.  Sharing it
+    changes no input and no assertion.
+    """
+    return solve(GaudinModel(g=1.0, K=12), **_PRESET_COMMON)
+
+
 @pytest.mark.parametrize("preset", ["balanced", "robust"])
-def test_preset_end_to_end_matches_exact(preset):
+def test_preset_end_to_end_matches_exact(preset, exact_reference):
     """solve(preset=...) (rSVD + guard) reproduces the default exact-SVD <S_z(t)>."""
     model = GaudinModel(g=1.0, K=12)
-    common = dict(T=3.0, eps=0.2, expansion_order=2, cutoff=1e-8, max_bond=400, channel=3)
-    ref = solve(model, **common)                 # default: exact full SVD
+    common = _PRESET_COMMON
+    ref = exact_reference                        # default: exact full SVD
     got = solve(model, preset=preset, **common)  # rSVD (guarded)
     n = min(len(ref.polarization), len(got.polarization))
     err = float(np.max(np.abs(np.asarray(ref.polarization[:n])
